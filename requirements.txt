@@ -1,0 +1,22 @@
+# --- Core data handling (Abdi: ingest, Alex: detect) ---
+pandas==3.0.6
+
+# --- Frontend / dashboard (Kea: access & UI) ---
+streamlit==1.65.0
+
+# --- Report generation (Kea: reports) ---
+jinja2==3.1.6
+weasyprint==70.0        # HTML -> PDF export for the custody report
+
+# --- Capture / webhook listener (Amir: capture) ---
+flask==3.1.3
+
+# --- Cryptography (Ash: seal / trust layer) ---
+cryptography==50.0.2    # Ed25519 classical signing, used alongside ML-DSA
+liboqs-python==0.16.0.1 # ML-DSA (post-quantum signing) — see note above
+
+# --- Testing (all — every module needs tests per its Definition of Done) ---
+pytest==9.1.1
+
+# --- Dev / quality of life ---
+python-dotenv==1.0.1    # loads .env for local config (API keys stay out of git)
