@@ -1,4 +1,4 @@
-# Snapped
+# Stamped
 
 **Court-ready digital evidence that stays trustworthy for 30 years.**
 
@@ -8,9 +8,9 @@ Built by **A3TK** for HackSecure 2026 — Digital Forensics Track.
 
 ## What this is
 
-Snapped is an evidence-integrity platform for digital forensics investigators. It seals evidence at the moment of capture, records every action in a tamper-evident custody log, links every analysis result back to the sealed source, and protects those integrity records with hybrid classical and post-quantum signatures — verifiable independently, without trusting our software.
+Stamped is an evidence-integrity platform for digital forensics investigators. It seals evidence at the moment of capture, records every action in a tamper-evident custody log, links every analysis result back to the sealed source, and protects those integrity records with hybrid classical and post-quantum signatures — verifiable independently, without trusting our software.
 
-Most digital evidence needs to stay trustworthy for 10 to 30 years, through investigation, trial, appeal, and cold-case review. Many small forensic units still track custody in spreadsheets, and integrity proofs built on today's signature schemes (RSA/ECDSA) were never designed to outlast the cryptography behind them. Snapped is built so the proof of integrity doesn't expire.
+Most digital evidence needs to stay trustworthy for 10 to 30 years, through investigation, trial, appeal, and cold-case review. Many small forensic units still track custody in spreadsheets, and integrity proofs built on today's signature schemes (RSA/ECDSA) were never designed to outlast the cryptography behind them. Stamped is built so the proof of integrity doesn't expire.
 
 For the full problem statement, market analysis, legal alignment, and business case, see [`docs/Project_Document.docx`](docs/Project_Document.docx).
 
@@ -32,7 +32,7 @@ Three rules hold across the whole system:
 ## Project structure
 
 ```
-snapped/
+stamped/
 ├── capture/        # Webhook listener, evidence bundle assembly (Amir)
 ├── seal/           # Hashing, custody log, hybrid signing, anchoring (Ash)
 ├── ingest/         # Log parsers, normalization, timeline (Abdi)
@@ -62,13 +62,13 @@ snapped/
 
 ```bash
 git clone <repo-url>
-cd snapped
+cd stamped
 pip install -r requirements.txt
 ```
 
 ### Crypto library setup
 
-Snapped uses hybrid signing: Ed25519 (classical) plus ML-DSA (post-quantum, via Open Quantum Safe's `liboqs-python`).
+Stamped uses hybrid signing: Ed25519 (classical) plus ML-DSA (post-quantum, via Open Quantum Safe's `liboqs-python`).
 
 ```bash
 pip install liboqs-python
@@ -108,7 +108,7 @@ The centerpiece of the project: an evidence item sealed in 2026, challenged on a
 4. A record is tampered with. The verifier runs and identifies exactly which entry broke the chain.
 5. The custody report exports with hashes, custody history, and algorithm status.
 
-## What Snapped protects against — and what it doesn't
+## What Stamped protects against — and what it doesn't
 
 | Protects against | Does not protect against |
 |---|---|
@@ -118,7 +118,7 @@ The centerpiece of the project: an evidence item sealed in 2026, challenged on a
 | A future weakening of classical signatures | Decryption of seized encrypted data |
 | Unreproducible analysis findings | Legal questions of admissibility, which courts decide |
 
-Snapped **supports** chain-of-custody practice aligned with ISO/IEC 27037 and **supports** POPIA safeguards through role-based access and audit logging. It does not guarantee admissibility, and it does not make an organisation POPIA compliant on its own.
+Stamped **supports** chain-of-custody practice aligned with ISO/IEC 27037 and **supports** POPIA safeguards through role-based access and audit logging. It does not guarantee admissibility, and it does not make an organisation POPIA compliant on its own.
 
 ## Team (A3TK)
 
@@ -130,6 +130,19 @@ Snapped **supports** chain-of-custody practice aligned with ISO/IEC 27037 and **
 | **Alex** | Detection — normalized schema, rules, provenance-linked findings |
 | **Kea** | Frontend — Streamlit dashboard, role views, report export |
 
+## Contributing (team only)
 
+Everyone commits directly to `main` — no feature branches, no PRs. That's fine for a team this size on this timeline, but it means the usual review safety net doesn't exist, so these rules replace it:
 
+- `git pull` before starting any session, commit small and often, and never leave `main` in a state where it doesn't run
+- Flag in the team channel *before* touching `schemas/schema.sql` — every module depends on it, and a bad change pushed straight to `main` breaks everyone's local copy immediately
+- Crypto code (anything in `seal/` touching hashing or signing) gets a manual line-by-line read by someone other than the author *before* it's pushed to `main` — schedule this as a deliberate step, since there's no PR to force it
+- No AI-generated mock/simulated results in the verifier or the tamper-detection demo path — see `docs/Stamped_Issues.md` cross-cutting guardrails
 
+## Status
+
+Built for HackSecure 2026. Submission deadline: **27 October 2026**. Feature freeze: 22 October 2026.
+
+## License
+
+TBD by team.
