@@ -71,10 +71,11 @@ pip install -r requirements.txt
 Stamped uses hybrid signing: Ed25519 (classical) plus ML-DSA (post-quantum, via Open Quantum Safe's `liboqs-python`).
 
 ```bash
-pip install liboqs-python
+python -m pip install -r requirements.txt
+python scripts/check_liboqs.py
 ```
 
-If this fails to build on your machine, see [`docs/crypto-setup.md`](docs/crypto-setup.md) for the agreed fallback (pure-Python ML-DSA implementation). Don't spend more than a few hours debugging the build before switching — this is flagged as the project's top technical risk.
+The smoke test verifies a real ML-DSA-65 signature and confirms that a modified message is rejected. See [`docs/crypto-setup.md`](docs/crypto-setup.md) for prerequisites, tested-machine results, and the team's time-boxed fallback status. Do not replace a failed install with a mock or simulated signature implementation.
 
 ### Initialize the database
 
