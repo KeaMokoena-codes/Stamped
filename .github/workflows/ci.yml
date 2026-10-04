@@ -50,4 +50,13 @@ jobs:
         run: python scripts/ci_guardrails.py
 
       - name: Run test suite
-        run: pytest -v --tb=short
+        run: |
+          pytest -v --tb=short
+          code=$?
+          if [ $code -eq 5 ]; then
+            echo "::warning::No tests collected yet. That's expected early on, but every \
+            module's Definition of Done in the issues backlog requires tests — this should \
+            stop being green-by-default well before feature freeze on 22 Oct."
+            exit 0
+          fi
+          exit $code
