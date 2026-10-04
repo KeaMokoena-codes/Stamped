@@ -132,12 +132,15 @@ Stamped **supports** chain-of-custody practice aligned with ISO/IEC 27037 and **
 
 ## Contributing (team only)
 
-Everyone commits directly to `main` — no feature branches, no PRs. That's fine for a team this size on this timeline, but it means the usual review safety net doesn't exist, so these rules replace it:
+Everyone commits directly to `main` — no feature branches or PRs. Since there is no review gate, use this protocol for every work session and commit:
 
-- `git pull` before starting any session, commit small and often, and never leave `main` in a state where it doesn't run
-- Flag in the team channel *before* touching `schemas/schema.sql` — every module depends on it, and a bad change pushed straight to `main` breaks everyone's local copy immediately
-- Crypto code (anything in `seal/` touching hashing or signing) gets a manual line-by-line read by someone other than the author *before* it's pushed to `main` — schedule this as a deliberate step, since there's no PR to force it
-- No AI-generated mock/simulated results in the verifier or the tamper-detection demo path — see `docs/Stamped_Issues.md` cross-cutting guardrails
+1. Run `git pull` before starting a session.
+2. Make small, focused commits as work is completed; don't save everything for one end-of-day commit.
+3. Run the full test suite locally (`pytest -v --tb=short`) before every commit.
+4. Never leave `main` in a state where the project does not run. If a change breaks it, fix or revert that change before starting other work.
+5. Before editing a shared or high-impact file, post a short heads-up in the GitHub issue thread for the task (use issue #1 for repository-wide coordination). Name the file and say you are starting, for example: "I'm touching `schemas/schema.sql` now" or "I'm touching `seal/signing.py` now." Post again when finished so the next person knows it is free. This 10-second message is the team's overlap check in place of a PR review.
+
+Crypto code (anything in `seal/` touching hashing or signing) should also get a manual line-by-line read by someone other than the author before it is pushed to `main`. No AI-generated mock/simulated results in the verifier or the tamper-detection demo path — see `docs/Stamped_Issues.md` cross-cutting guardrails.
 
 ## Status
 
