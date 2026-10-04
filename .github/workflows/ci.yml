@@ -1,0 +1,53 @@
+name: CI
+
+# Everyone commits straight to main — no PR gate — so CI runs on every
+# push to main and is the only automated check this project has.
+# Treat a red run as "stop and fix before the next commit", not as
+# something to come back to later.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test-and-guardrails:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies (excluding liboqs-python)
+        run: |
+          grep -v "^liboqs-python" requirements.txt > /tmp/requirements-core.txt
+          pip install --upgrade pip
+          pip install -r /tmp/requirements-core.txt
+
+      - name: Try installing liboqs-python (non-blocking)
+        id: liboqs
+        continue-on-error: true
+        run: pip install liboqs-python==0.16.0.1
+
+      - name: Report liboqs status
+        run: |
+          if [ "${{ steps.liboqs.outcome }}" = "success" ]; then
+            echo "liboqs-python installed — full crypto test suite will run."
+          else
+            echo "::warning::liboqs-python failed to install on the CI runner. \
+            This mirrors the build risk flagged in Issue 0.3 — tests that depend \
+            on it are skipped here, not passed. Verify ML-DSA signing on a real \
+            team machine before trusting that path."
+          fi
+
+      - name: Run guardrail checks
+        run: python scripts/ci_guardrails.py
+
+      - name: Run test suite
+        run: pytest -v --tb=short
