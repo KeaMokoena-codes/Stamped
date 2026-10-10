@@ -85,8 +85,26 @@ def seal_evidence(
     sealed_path = sealed_dir / content_hash
 
     try:
-        shutil.copy2(file_path, sealed_path)
-        sealed_path.chmod(0o444)  # read-only, best-effort (platform dependent)
+        if sealed_path.exists():
+            # A sealed copy with this hash already exists but has no evidence row:
+            # a previous seal failed after the copy and was rolled back. The copy is
+            # read-only, so re-copying over it would fail and block every retry.
+            # The path is content-addressed, so it is safe to reuse ONLY if its bytes
+            # really hash to the expected value. Never trust it on name alone.
+            if _hash_file_bytes(sealed_path) != content_hash:
+                append_entry(
+                    conn, actor=actor, role=role, action="seal_failed",
+                    details={"reason": "existing_sealed_copy_hash_mismatch",
+                             "sealed_path": str(sealed_path)},
+                )
+                conn.commit()
+                raise IntakeError(
+                    f"Cannot seal '{file_path}': a file already at '{sealed_path}' does "
+                    "not match its content hash. Investigate before retrying."
+                )
+        else:
+            shutil.copy2(file_path, sealed_path)
+            sealed_path.chmod(0o444)  # read-only, best-effort (platform dependent)
     except OSError as e:
         append_entry(
             conn, actor=actor, role=role, action="seal_failed",

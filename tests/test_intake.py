@@ -107,3 +107,61 @@ def test_sealing_an_empty_file_does_not_crash(conn, tmp_path, sealed_dir):
     empty.write_bytes(b"")
     evidence_id = seal_evidence(conn, empty, sealed_dir=sealed_dir)
     assert evidence_id == sha256(b"").hexdigest()
+
+def _simulate_non_root_copy(monkeypatch):
+    """Copying onto an existing read-only file raises PermissionError for a normal
+    user (root ignores file modes, so without this the bug would not reproduce in
+    environments that run tests as root)."""
+    import shutil
+    from seal import intake
+    real_copy2 = shutil.copy2
+
+    def copy2(src, dst, *a, **kw):
+        if Path(dst).exists():
+            raise PermissionError(13, "Permission denied", str(dst))
+        return real_copy2(src, dst, *a, **kw)
+
+    monkeypatch.setattr(intake.shutil, "copy2", copy2)
+
+
+def test_retry_after_failed_seal_reuses_orphaned_copy(conn, sample_file, sealed_dir, monkeypatch):
+    from seal import intake
+    _simulate_non_root_copy(monkeypatch)
+
+    # First attempt: the custody entry fails AFTER the file copy, so the DB rolls
+    # back but a read-only sealed copy is left on disk.
+    real_append = intake.append_entry
+
+    def failing_append(*a, **kw):
+        if kw.get("action") == "sealed":
+            raise sqlite3.OperationalError("simulated failure")
+        return real_append(*a, **kw)
+
+    monkeypatch.setattr(intake, "append_entry", failing_append)
+    with pytest.raises(sqlite3.OperationalError):
+        seal_evidence(conn, sample_file, sealed_dir=sealed_dir)
+    assert conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 0
+    assert len(list(sealed_dir.iterdir())) == 1  # the orphaned copy
+
+    # Retry with no fault must succeed rather than fail with "Permission denied".
+    monkeypatch.setattr(intake, "append_entry", real_append)
+    evidence_id = seal_evidence(conn, sample_file, sealed_dir=sealed_dir)
+    assert evidence_id == sha256(sample_file.read_bytes()).hexdigest()
+    assert conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 1
+    ok, _ = recompute_and_verify_chain(conn)
+    assert ok is True
+
+
+def test_orphaned_copy_with_wrong_content_is_not_trusted(conn, sample_file, sealed_dir):
+    content_hash = sha256(sample_file.read_bytes()).hexdigest()
+    bad = sealed_dir / content_hash
+    bad.write_bytes(b"not the evidence")  # right name, wrong bytes
+
+    with pytest.raises(IntakeError):
+        seal_evidence(conn, sample_file, sealed_dir=sealed_dir)
+
+    assert conn.execute("SELECT COUNT(*) FROM evidence").fetchone()[0] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM custody_log WHERE action = 'seal_failed'"
+    ).fetchone()[0] == 1
+    assert bad.read_bytes() == b"not the evidence"  # left untouched for investigation
