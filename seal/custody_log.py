@@ -93,15 +93,30 @@ def append_entry(
     return entry_hash
 
 
-def recompute_and_verify_chain(conn: sqlite3.Connection) -> tuple[bool, int | None]:
-    rows = conn.execute(
-        """
-        SELECT entry_id, timestamp_utc, actor, role, action, evidence_id,
-            artifact_id, details_json, prev_hash, entry_hash
-        FROM custody_log ORDER BY entry_id ASC
-        """
+CHAIN_COLUMNS = (
+    "entry_id, timestamp_utc, actor, role, action, evidence_id, "
+    "artifact_id, details_json, prev_hash, entry_hash"
+)
+
+
+def fetch_chain_rows(conn: sqlite3.Connection) -> list[tuple]:
+    """Return every custody entry, oldest first, in ONE query (one snapshot).
+
+    Row order: entry_id, timestamp_utc, actor, role, action, evidence_id,
+    artifact_id, details_json, prev_hash, entry_hash.
+    """
+    return conn.execute(
+        f"SELECT {CHAIN_COLUMNS} FROM custody_log ORDER BY entry_id ASC"
     ).fetchall()
 
+
+def verify_chain_rows(rows: list[tuple]) -> tuple[bool, int | None]:
+    """Recompute the chain from already-fetched rows. Returns (True, None) if
+    every entry matches, or (False, entry_id) for the first entry that does not.
+
+    Working on a fetched list lets a caller verify and read the chain head from
+    the SAME snapshot, so the head it then anchors is exactly the head it verified.
+    """
     expected_prev = GENESIS_PREV_HASH
     for row in rows:
         (entry_id, timestamp_utc, actor, role, action, evidence_id,
@@ -126,3 +141,7 @@ def recompute_and_verify_chain(conn: sqlite3.Connection) -> tuple[bool, int | No
         expected_prev = stored_hash
 
     return True, None
+
+
+def recompute_and_verify_chain(conn: sqlite3.Connection) -> tuple[bool, int | None]:
+    return verify_chain_rows(fetch_chain_rows(conn))

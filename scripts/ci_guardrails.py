@@ -1,22 +1,4 @@
 #!/usr/bin/env python3
-"""
-CI guardrail checks for Stamped.
-
-This script is NOT a substitute for the manual crypto review required by
-docs/Stamped_Issues.md — it's a cheap automated net that catches the most
-obvious, repeatable mistakes before they land on main (since everyone
-commits directly to main with no PR gate, this is the only automated
-checkpoint the project has).
-
-Checks are intentionally conservative: they skip gracefully if a file
-doesn't exist yet (early in the project, most won't), and they distinguish
-ERROR (fails the build) from WARNING (prints but doesn't fail), because a
-regex-based scan will have false positives and shouldn't block the team
-on those.
-
-Run locally with: python scripts/ci_guardrails.py
-"""
-
 import re
 import subprocess
 import sys
@@ -149,17 +131,21 @@ def check_no_silent_exceptions():
 # 6. Verifier must not import from the app's own internal modules
 # ---------------------------------------------------------------------
 def check_verifier_is_independent():
-    target = REPO_ROOT / "verifier" / "verify.py"
-    if not target.exists():
+    folder = REPO_ROOT / "verifier"
+    if not folder.exists():
         return
-    text = read(target)
-    forbidden_imports = re.findall(r"^\s*(?:from|import)\s+(seal|app|ingest|detect|access)\b", text, re.M)
-    if forbidden_imports:
-        errors.append(
-            f"verifier/verify.py imports from {set(forbidden_imports)} — per Issue 1.5 the verifier "
-            "must stay independent of the app's internal modules, otherwise it can share a bug with "
-            "the thing it's supposed to be checking."
+    # Every verifier module must stay independent, not just verify.py.
+    for target in sorted(folder.glob("*.py")):
+        text = read(target)
+        forbidden_imports = re.findall(
+            r"^\s*(?:from|import)\s+(seal|app|ingest|detect|access|report|capture)\b", text, re.M
         )
+        if forbidden_imports:
+            errors.append(
+                f"verifier/{target.name} imports from {set(forbidden_imports)} — per Issue 1.5 the verifier "
+                "must stay independent of the app's internal modules, otherwise it can share a bug with "
+                "the thing it's supposed to be checking."
+            )
 
 
 # ---------------------------------------------------------------------

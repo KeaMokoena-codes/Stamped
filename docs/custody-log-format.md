@@ -137,5 +137,8 @@ instead of writing a stale entry; callers should retry.
 - Removing the newest entries: a shorter chain is still self-consistent.
 - An attacker who edits an entry and recomputes every later hash.
 
-Detecting these requires an externally anchored copy of the head hash
-(Issue #1.4). Until anchoring exists, do not claim the log is tamper-proof.
+Detecting these requires an externally anchored copy of the head hash. That
+is implemented in Issue #7 (`seal/anchor.py`, `verifier/anchor_check.py`); see
+`docs/anchoring.md`. It only helps if the anchors are stored where the
+application cannot rewrite them, and entries added after the newest anchor
+remain unprotected until the next one. Do not describe the log as tamper-proof.

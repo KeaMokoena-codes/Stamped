@@ -57,8 +57,10 @@ sign a structure that already contains the signature (circular).
 - Private keys are stored as raw files protected by filesystem permissions
   only. They are **not** passphrase-encrypted. Anyone with read access to the
   machine as that user can use them.
-- Signing is not yet wired into the custody log. Issue #1.4 (anchoring) is
-  where checkpoints get signed.
+- Hybrid signing is applied to **external anchors** (`seal/anchor.py`, see
+  `docs/anchoring.md`), which are signed with the case's keys. Individual
+  custody log entries are not signed; they are protected by the hash chain and
+  by the anchors.
 - A hybrid signature protects integrity records against a future break of one
   algorithm family. It does not make evidence admissible and does not protect
   seized encrypted data.
