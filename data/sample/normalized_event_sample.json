@@ -1,0 +1,24 @@
+[
+  {
+    "event_id": "3d5a498b8b92b6a0bb6c8a0026fdf9491efc562e831ff6f03d1582e34fa682e3",
+    "evidence_id": "89eee9e36c182722f9fadc6e5617a4818ffc66109e7e222b8f9e8b78fc3aa2f3",
+    "raw_ref": "line:1",
+    "timestamp_utc": "2026-10-12T10:14:00+00:00",
+    "event_type": "auth",
+    "outcome": "failure",
+    "account": "admin",
+    "source_ip": "192.168.1.50",
+    "service": "ssh"
+  },
+  {
+    "event_id": "5fa2b8c9d1e34a67890f123456789abcdef0123456789abcdef0123456789abc",
+    "evidence_id": "89eee9e36c182722f9fadc6e5617a4818ffc66109e7e222b8f9e8b78fc3aa2f3",
+    "raw_ref": "line:2",
+    "timestamp_utc": "2026-10-12T10:15:00+00:00",
+    "event_type": "auth",
+    "outcome": "success",
+    "account": "abdi",
+    "source_ip": "192.168.1.20",
+    "service": "ssh"
+  }
+]
