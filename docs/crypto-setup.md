@@ -34,13 +34,13 @@ result for each team machine here. The project requirement is at least three
 successful team-machine round-trips; a CI runner or repeated test on one
 machine does not count as multiple team machines.
 
-| Machine/member | OS                                           | Python | liboqs-python | Result |
-|---|----------------------------------------------|---|---|---|
-| Local Windows machine | Windows 11 Home Single Language, version 10.0.26200 (build 26200) | 3.13.4 | 0.16.0.1 present | **Failed**: Python binding present, but no native liboqs library was found; auto-build stopped because `cmake` was not available on `PATH`. ML-DSA keygen/sign/verify was not reached. |
-| Alex (Detect), Windows | Windows 10 Pro, Version 22H2 Build 19045.6466| 3.11.9 | 0.16.0.1 / liboqs 0.16.0 | **PASS**: ML-DSA-65 keygen, sign, verify, and tampered-message rejection. Built from source via auto-build (Git 2.55, CMake 4.4.4, VS Build Tools 2022 C++ workload). |
-| Team machine 3 | Not reported                                 | Not reported | Not reported | Pending |
-| Team machine 4 | Not reported                                 | Not reported | Not reported | Pending |
-| Team machine 5 | Not reported                                 | Not reported | Not reported | Pending |
+| Machine/member | OS | Python | liboqs-python | Result |
+|---|---|---|---|---|
+| Local Windows machine | Windows 11 Home Single Language, version 10.0.26200 (build 26200) | 3.13.4 | 0.16.0.1 present | Failed: Python binding present, but no native liboqs library was found; auto-build stopped because `cmake` was not available on `PATH`. ML-DSA keygen/sign/verify was not reached. |
+| Alex (Detect), Windows | Windows 10 Pro, Version 22H2 Build 19045.6466 | 3.11.9 | 0.16.0.1 / liboqs 0.16.0 | **PASS**: ML-DSA-65 keygen, sign, verify, and tampered-message rejection. Built from source via auto-build (Git 2.55, CMake 4.4.4, VS Build Tools 2022 C++ workload). |
+| Abdi (Ingest), Windows (Dell Latitude 5521) | Windows 11 Pro, Version 26H2 Build 26300.9550 | 3.13.4 | 0.16.0.1 / liboqs 0.16.0 | **PASS**: ML-DSA-65 keygen, sign, verify, and tampered-message rejection. Built from source via auto-build (Git, CMake, VS Build Tools 2022 C++ workload). |
+| Team machine 4 | Not reported | Not reported | Not reported | Pending |
+| Team machine 5 | Not reported | Not reported | Not reported | Pending |
 
 The local failure occurred before CMake configuration or compilation and is
 not a four-hour build attempt. It does not, by itself, establish that liboqs
