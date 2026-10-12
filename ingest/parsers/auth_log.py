@@ -1,5 +1,5 @@
 """
-Authentication Log Parser (Issue #16).
+Authentication Log Parser (Issue #16 & Issue #18 validation updates).
 Parses standard OpenSSH / Linux auth.log files into NormalizedEvent structures.
 Registers the parsed output into the 'artifacts' table and records a custody entry.
 """
@@ -19,7 +19,7 @@ from schemas.normalized_event import NormalizedEvent, make_event_id
 from seal.custody_log import append_entry
 
 TOOL_NAME = "auth_log_parser"
-TOOL_VERSION = "1.0.0"
+TOOL_VERSION = "1.1.0"
 
 MONTHS: Dict[str, int] = {
     "Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
@@ -28,7 +28,7 @@ MONTHS: Dict[str, int] = {
 
 LINE_RE = re.compile(
     r"^(?P<mon>[A-Z][a-z]{2})\s+(?P<day>\d{1,2})\s+(?P<time>\d{2}:\d{2}:\d{2})\s+"
-    r"(?P<host>\S+)\s+sshd\[(?P<pid>\d+)\]:\s+(?P<msg>.*)$"
+    r"(?P<host>\S+)\s+sshd\[(?P<pid>\d+)\]:\s+(?P<msg>.*?)\s*$"
 )
 FAILED_RE = re.compile(
     r"^Failed password for (?:invalid user )?(?P<user>\S+) from (?P<ip>\S+) port \d+"
@@ -42,19 +42,19 @@ def parse_auth_line(
     raw_line: str,
     line_number: int,
     evidence_id: str,
-    base_year: int,
-) -> Tuple[Optional[NormalizedEvent], bool]:
+    current_year: int,
+) -> Tuple[Optional[NormalizedEvent], bool, Optional[int]]:
     """
     Parses a single auth.log line into a NormalizedEvent.
-    Returns (event, is_unparsed_line).
+    Returns (event, is_unparsed_line, parsed_month).
     """
     match = LINE_RE.match(raw_line)
     if not match:
-        return None, True
+        return None, True, None
 
     month_str = match.group("mon")
     if month_str not in MONTHS:
-        return None, True
+        return None, True, None
 
     month = MONTHS[month_str]
     day = int(match.group("day"))
@@ -77,11 +77,11 @@ def parse_auth_line(
             account = acc_m.group("user")
             source_ip = acc_m.group("ip")
         else:
-            # Informational sshd connections or pam messages: safely ignored
-            return None, False
+            # Routine sshd connection/PAM/disconnect message: ignored, not unparseable
+            return None, False, month
 
     dt = datetime(
-        base_year, month, day, time_parts[0], time_parts[1], time_parts[2], tzinfo=timezone.utc
+        current_year, month, day, time_parts[0], time_parts[1], time_parts[2], tzinfo=timezone.utc
     )
     raw_ref = f"line:{line_number}"
     event_id = make_event_id(evidence_id, raw_ref)
@@ -97,7 +97,7 @@ def parse_auth_line(
         source_ip=source_ip,
         service="ssh",
     )
-    return event, False
+    return event, False, month
 
 
 def parse_and_record_auth_log(
@@ -111,30 +111,44 @@ def parse_and_record_auth_log(
     """
     Parses an authentication log file, inserts an entry into the 'artifacts'
     table with its provenance link, and appends a record to the custody log.
+    Handles Dec -> Jan year rollover automatically.
     """
     path = Path(file_path)
     if not path.is_file():
         raise FileNotFoundError(f"Auth log file not found: {path}")
 
     raw_bytes = path.read_bytes()
-    # Direct cryptographic SHA-256 over raw input file bytes
     input_hash = hashlib.sha256(raw_bytes).hexdigest()
 
     lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
     events: List[NormalizedEvent] = []
     unparsed_lines = 0
+    ignored_lines = 0
+    cur_year = base_year
+    prev_month: Optional[int] = None
 
     for idx, line in enumerate(lines, start=1):
-        line = line.strip()
-        if not line:
+        stripped = line.strip()
+        if not stripped:
+            ignored_lines += 1
             continue
-        event, is_unparsed = parse_auth_line(line, idx, source_evidence_id, base_year)
+
+        # Peek month to check year rollover before constructing timestamp
+        m = LINE_RE.match(stripped)
+        if m and m.group("mon") in MONTHS:
+            line_month = MONTHS[m.group("mon")]
+            if prev_month is not None and line_month < prev_month:
+                cur_year += 1
+            prev_month = line_month
+
+        event, is_unparsed, _ = parse_auth_line(stripped, idx, source_evidence_id, cur_year)
         if is_unparsed:
             unparsed_lines += 1
         elif event is not None:
             events.append(event)
+        else:
+            ignored_lines += 1
 
-    # Deterministic output serialization for artifact hashing
     serialized_events = [asdict(e) for e in events]
     output_hash = canonical_hash(serialized_events)
     artifact_id = f"art-{output_hash[:16]}"
@@ -142,13 +156,13 @@ def parse_and_record_auth_log(
     stats = {
         "total_lines": len(lines),
         "parsed_events": len(events),
+        "ignored_lines": ignored_lines,
         "unparsed_lines": unparsed_lines,
     }
 
     now_utc = datetime.now(timezone.utc).isoformat()
     metadata_json = canonical_json(stats)
 
-    # 1. Register the derived artifact in the database
     conn.execute(
         """
         INSERT INTO artifacts (
@@ -169,7 +183,6 @@ def parse_and_record_auth_log(
         ),
     )
 
-    # 2. Append an entry to the hash-chained custody log
     append_entry(
         conn=conn,
         actor=actor,
@@ -181,6 +194,7 @@ def parse_and_record_auth_log(
             "tool_name": TOOL_NAME,
             "tool_version": TOOL_VERSION,
             "events_count": len(events),
+            "ignored_count": ignored_lines,
             "unparsed_count": unparsed_lines,
         },
     )
