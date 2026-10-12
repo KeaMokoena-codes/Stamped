@@ -4,10 +4,14 @@ import sys
 
 import pytest
 
+# Skip ONLY if liboqs itself cannot be imported. Our own module is imported outside
+# the try so a real bug in seal/signing.py fails loudly instead of showing as "skipped".
 try:
-    from seal import signing
+    import oqs  # noqa: F401
 except Exception as exc:  # ImportError, or liboqs' RuntimeError on a failed native build
     pytest.skip(f"liboqs unavailable, ML-DSA not tested here: {type(exc).__name__}", allow_module_level=True)
+
+from seal import signing
 
 MESSAGE = b"entry_hash:9f2c...canonical-bytes-of-a-custody-checkpoint"
 
