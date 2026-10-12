@@ -1,0 +1,56 @@
+{
+  "Records": [
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "IAMUser",
+        "principalId": "AIDAEXAMPLEADMIN",
+        "arn": "arn:aws:iam::123456789012:user/admin",
+        "accountId": "123456789012",
+        "userName": "admin"
+      },
+      "eventTime": "2026-10-12T10:20:00Z",
+      "eventSource": "signin.amazonaws.com",
+      "eventName": "ConsoleLogin",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "192.168.1.50",
+      "userAgent": "Mozilla/5.0",
+      "errorMessage": "Failed authentication",
+      "responseElements": {
+        "ConsoleLogin": "Failure"
+      }
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "IAMUser",
+        "principalId": "AIDAEXAMPLEABDI",
+        "arn": "arn:aws:iam::123456789012:user/abdi",
+        "accountId": "123456789012",
+        "userName": "abdi"
+      },
+      "eventTime": "2026-10-12T10:25:00Z",
+      "eventSource": "signin.amazonaws.com",
+      "eventName": "ConsoleLogin",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "192.168.1.20",
+      "userAgent": "Mozilla/5.0",
+      "responseElements": {
+        "ConsoleLogin": "Success"
+      }
+    },
+    {
+      "eventVersion": "1.08",
+      "userIdentity": {
+        "type": "AWSService",
+        "invokedBy": "cloudformation.amazonaws.com"
+      },
+      "eventTime": "2026-10-12T10:30:00Z",
+      "eventSource": "s3.amazonaws.com",
+      "eventName": "DescribeAccountAttributes",
+      "awsRegion": "us-east-1",
+      "sourceIPAddress": "cloudformation.amazonaws.com",
+      "userAgent": "aws-sdk"
+    }
+  ]
+}
