@@ -31,3 +31,6 @@ id_ed25519
 *.db-wal
 *.sqlite-shm
 *.sqlite-wal
+
+# Offline IP geolocation databases: large and separately licensed
+*.mmdb

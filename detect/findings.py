@@ -14,6 +14,9 @@ Mapping
                                      and in the per-evidence custody entries.
   custody_log: actor="detect", action="finding_created", artifact_id=finding_hash
 
+Rules may supply "title"/"description" in the finding (impossible_travel does);
+brute_force_login does not, and keeps its original wording and hashes.
+
 Wall-clock time is used only for created_at columns, never inside the hash.
 Callers own the transaction (append_entry does not commit either).
 """
@@ -24,6 +27,7 @@ from datetime import datetime, timezone
 
 from detect.canon import canonical_json
 from detect.rules.brute_force import BruteForceConfig, detect
+from detect.rules.impossible_travel import TravelConfig, detect_impossible_travel
 from seal.custody_log import append_entry
 
 ACTOR = "detect"
@@ -47,7 +51,6 @@ def record_finding(conn, finding: dict) -> bool:
     primary = events[0]["evidence_id"]
     rule_id = f"{finding['rule_name']}@{finding['rule_version']}"
     now = datetime.now(timezone.utc).isoformat()
-    cfg = finding["config"]
 
     conn.execute(
         """INSERT INTO artifacts
@@ -58,14 +61,18 @@ def record_finding(conn, finding: dict) -> bool:
          finding["input_hash"], fid, canonical_json({"evidence_ids": evidence_ids})),
     )
 
-    title = f"{finding['failure_count']} failed logins for {finding['grouped_by']} {finding['key']}"
-    if finding["followed_by_success"]:
-        title += ", followed by a success"
-    description = (
-        f"{finding['failure_count']} failures between {finding['first_seen']} and "
-        f"{finding['last_seen']} (threshold {cfg['threshold']} in {cfg['window_seconds']}s). "
-        f"Rule {rule_id}."
-    )
+    if "title" in finding:                      # rule supplies its own wording
+        title, description = finding["title"], finding["description"]
+    else:                                       # brute_force_login (v1.0.0) wording
+        title = f"{finding['failure_count']} failed logins for {finding['grouped_by']} {finding['key']}"
+        if finding["followed_by_success"]:
+            title += ", followed by a success"
+        cfg = finding["config"]
+        description = (
+            f"{finding['failure_count']} failures between {finding['first_seen']} and "
+            f"{finding['last_seen']} (threshold {cfg['threshold']} in {cfg['window_seconds']}s). "
+            f"Rule {rule_id}."
+        )
     conn.execute(
         """INSERT INTO findings
            (finding_id, source_evidence_id, artifact_id, rule_id, severity,
@@ -90,13 +97,24 @@ def record_finding(conn, finding: dict) -> bool:
     return True
 
 
-def detect_and_record(conn, events, cfg: BruteForceConfig = BruteForceConfig()) -> int:
-    """Run the rule and persist every finding in ONE transaction (all or nothing).
+def record_all(conn, findings) -> int:
+    """Persist findings from ANY rule in ONE transaction (all or nothing).
     Returns the number of newly recorded findings."""
     try:
-        new = sum(1 for f in detect(events, cfg) if record_finding(conn, f))
+        new = sum(1 for f in findings if record_finding(conn, f))
         conn.commit()
         return new
     except Exception:
         conn.rollback()
         raise
+
+
+def detect_and_record(conn, events, cfg: BruteForceConfig = BruteForceConfig()) -> int:
+    """Run the brute-force rule and persist every finding in ONE transaction."""
+    return record_all(conn, detect(events, cfg))
+
+
+def detect_travel_and_record(conn, events, geolocate, geo_info,
+                             cfg: TravelConfig = TravelConfig()) -> int:
+    """Run the impossible-travel rule and persist every finding in ONE transaction."""
+    return record_all(conn, detect_impossible_travel(events, cfg, geolocate, geo_info))

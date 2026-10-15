@@ -150,3 +150,7 @@ Built for HackSecure 2026. Submission deadline: **27 October 2026**. Feature fre
 ## License
 
 TBD by team.
+
+## Credits
+
+IP geolocation by [DB-IP.com](https://db-ip.com) (IP to City Lite, CC BY 4.0), used by the impossible-travel rule.
