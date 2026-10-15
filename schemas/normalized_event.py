@@ -9,6 +9,11 @@ Rules every parser must follow:
   * event_id is deterministic: make_event_id(evidence_id, raw_ref).
   * raw_ref points at the exact line/offset in the sealed file.
   * outcome is one of OUTCOMES. Use "unknown" rather than guessing.
+  * outcome means "did the LOGIN succeed or fail" ONLY when event_type is
+    "auth". For any other event_type (e.g. "activity") it describes the
+    action's own result (an API call that returned an error is not a failed
+    login). Consumers MUST filter on event_type; login rules ignore
+    everything that is not EVENT_TYPE_AUTH.
 """
 from __future__ import annotations
 
@@ -17,6 +22,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 OUTCOMES = ("success", "failure", "unknown")
+EVENT_TYPE_AUTH = "auth"
 
 
 def make_event_id(evidence_id: str, raw_ref: str) -> str:

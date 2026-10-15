@@ -63,7 +63,7 @@ def record_finding(conn, finding: dict) -> bool:
 
     if "title" in finding:                      # rule supplies its own wording
         title, description = finding["title"], finding["description"]
-    else:                                       # brute_force_login (v1.0.0) wording
+    else:                                       # brute_force_login wording (v1.x)
         title = f"{finding['failure_count']} failed logins for {finding['grouped_by']} {finding['key']}"
         if finding["followed_by_success"]:
             title += ", followed by a success"

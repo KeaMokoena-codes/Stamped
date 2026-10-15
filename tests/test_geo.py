@@ -59,7 +59,8 @@ def test_rule_end_to_end_with_real_mmdb_reader(mmdb):
     geolocate, info = open_geo(mmdb)
     t0 = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
     events = [
-        {"event_id": f"e{i}", "evidence_id": "E1", "raw_ref": f"line:{i}", "outcome": "success",
+        {"event_id": f"e{i}", "evidence_id": "E1", "raw_ref": f"line:{i}",
+         "event_type": "auth", "outcome": "success",
          "timestamp_utc": (t0 + timedelta(minutes=5 * i)).isoformat(), "account": "alice", "source_ip": ip}
         for i, ip in enumerate(["8.8.8.8", "9.9.9.9"])]
     f = detect_impossible_travel(events, TravelConfig(), geolocate, info)

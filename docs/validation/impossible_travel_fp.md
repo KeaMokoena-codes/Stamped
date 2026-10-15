@@ -1,6 +1,12 @@
 # Impossible-travel rule: validation notes, accuracy limits and false positives
 
-Rule: `impossible_travel` v1.0.0 (`detect/rules/impossible_travel.py`)
+Rule: `impossible_travel` v1.1.0 (`detect/rules/impossible_travel.py`)
+
+**Scope (v1.1.0):** only login events (`event_type == "auth"`) are used. v1.0.0 treated any
+successful event with an account and IP as a login, so ordinary API calls made from two places
+could be flagged (reproduced with the real CloudTrail parser). Covered by
+`tests/test_event_type_filter.py`. The Loghub feasibility run in section 4 is SSH-only, so its
+counts are unaffected.
 Geolocation wrapper: `detect/geo.py`
 
 ## 1. What the rule does and what it does NOT claim

@@ -1,6 +1,13 @@
 # Brute-force rule: validation notes and false positives
 
-Rule: `brute_force_login` v1.0.0 (`detect/rules/brute_force.py`)
+Rule: `brute_force_login` v1.1.0 (`detect/rules/brute_force.py`)
+
+**Scope (v1.1.0):** only login events (`event_type == "auth"`) are counted. v1.0.0 counted any
+event whose outcome was `failure`, so failed non-login actions such as CloudTrail `AccessDenied`
+API calls could look like failed logins. Found by running the real CloudTrail parser into the rule;
+covered by `tests/test_event_type_filter.py`. The SSH results in section 3 were produced with
+v1.0.0. SSH logs contain only auth events, so v1.1.0 gives the same findings on them (re-run
+`validate_brute_force.py` to confirm the table is unchanged).
 
 ## 1. Known false-positive scenarios
 

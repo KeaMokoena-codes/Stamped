@@ -210,7 +210,7 @@ def test_travel_finding_is_persisted_with_full_provenance(conn):
         "SELECT f.details_json, a.output_hash, f.rule_id, f.severity, f.title "
         "FROM findings f JOIN artifacts a ON a.artifact_id = f.artifact_id").fetchone()
     assert hashlib.sha256(text.encode("utf-8")).hexdigest() == out == f["finding_hash"]
-    assert rule == "impossible_travel@1.0.0" and sev == "medium" and "Impossible travel" in title
+    assert rule == "impossible_travel@1.1.0" and sev == "medium" and "Impossible travel" in title
     assert conn.execute("SELECT COUNT(*) FROM custody_log WHERE action='finding_created'"
                         ).fetchone()[0] == 2           # one per evidence item
     assert recompute_and_verify_chain(conn) == (True, None)

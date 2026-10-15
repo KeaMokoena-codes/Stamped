@@ -1,5 +1,5 @@
 """
-Brute-force login detection rule  (rule_name=brute_force_login, version 1.0.0)
+Brute-force login detection rule  (rule_name=brute_force_login, version 1.1.0)
 
 WHAT IT FLAGS
   >= `threshold` failed logins for one account, or from one source IP, within
@@ -23,6 +23,9 @@ BEHAVIOUR
     NOT counted as following it.
   * The same attack seen by both groupings yields two findings (one per
     dimension). The dashboard may choose to group them.
+  * Only LOGIN events count: event_type must be "auth". Other activity, such
+    as an API call that returned AccessDenied, is ignored even when its
+    outcome is "failure". Events with no event_type are ignored too.
 
 PROVENANCE
   input_hash   = hash of ONLY the events examined (burst failures + matched
@@ -31,6 +34,13 @@ PROVENANCE
                  input_hash), so changing config changes the hash.
 
 False-positive scenarios: docs/validation/brute_force_fp.md
+
+VERSION HISTORY
+  1.1.0  Only event_type == "auth" events are counted. 1.0.0 counted any event
+         whose outcome was "failure"/"success", so failed non-login actions
+         (e.g. CloudTrail AccessDenied calls) could look like failed logins.
+         SSH results are unchanged: every event the SSH parser emits is "auth".
+  1.0.0  Initial release.
 """
 from __future__ import annotations
 
@@ -39,9 +49,10 @@ from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timedelta, timezone
 
 from detect.canon import canonical_hash
+from schemas.normalized_event import EVENT_TYPE_AUTH
 
 RULE_NAME = "brute_force_login"
-RULE_VERSION = "1.0.0"
+RULE_VERSION = "1.1.0"
 DIMENSIONS = ("account", "source_ip")
 
 
@@ -92,7 +103,8 @@ def _bursts(times, cfg):
 
 def detect(events, cfg: BruteForceConfig = BruteForceConfig()) -> list[dict]:
     rows = sorted(
-        ((_parse_ts(e["timestamp_utc"]), e) for e in map(_as_dict, events)),
+        ((_parse_ts(e["timestamp_utc"]), e) for e in map(_as_dict, events)
+         if e.get("event_type") == EVENT_TYPE_AUTH),
         key=lambda r: (r[0], str(r[1]["event_id"])),
     )
     findings = []

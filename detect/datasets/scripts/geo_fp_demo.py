@@ -42,7 +42,8 @@ def main():
     print(f"Distance : {haversine_km(p1, p2):,.0f} km (estimate)")
 
     t0 = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
-    events = [{"event_id": f"e{i}", "evidence_id": "demo", "raw_ref": f"line:{i}", "outcome": "success",
+    events = [{"event_id": f"e{i}", "evidence_id": "demo", "raw_ref": f"line:{i}",
+               "event_type": "auth", "outcome": "success",
                "timestamp_utc": (t0 + timedelta(minutes=a.minutes * i)).isoformat(),
                "account": "demo-user", "source_ip": ip}
               for i, ip in enumerate([a.home_ip, a.other_ip])]

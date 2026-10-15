@@ -1,5 +1,5 @@
 """
-Impossible-travel detection rule  (rule_name=impossible_travel, version 1.0.0)
+Impossible-travel detection rule  (rule_name=impossible_travel, version 1.1.0)
 
 WHAT IT FLAGS
   Two SUCCESSFUL logins for the same account, from different IPs, whose
@@ -29,7 +29,9 @@ GEOLOCATION (injected, see detect/geo.py)
   ESTIMATE. Never present a finding as proof the account was shared.
 
 BEHAVIOUR
-  * Only outcome == "success" events with an account and source_ip are used.
+  * Only LOGIN events are used: event_type == "auth", outcome == "success",
+    with an account and a source_ip. Ordinary activity (e.g. API calls) is
+    ignored, so it can neither create a login pair nor sit between two.
   * Per account, logins are sorted by (timestamp, event_id) and CONSECUTIVE
     logins from different IPs are compared. Same-IP logins never count.
   * Logins whose IP cannot be located (private, reserved, not in the database)
@@ -51,6 +53,12 @@ PROVENANCE (same shape as brute_force_login, so detect/findings.py stores it)
 FALSE POSITIVES (demonstrated in tests/test_impossible_travel.py)
   VPN / proxy exit nodes, mobile carrier NAT gateways, shared corporate egress.
   See docs/validation/impossible_travel_fp.md.
+
+VERSION HISTORY
+  1.1.0  Only event_type == "auth" events are used. 1.0.0 treated any
+         successful event with an account and IP as a login, so ordinary
+         API calls from two places could be flagged. SSH results unchanged.
+  1.0.0  Initial release.
 """
 from __future__ import annotations
 
@@ -61,9 +69,10 @@ from datetime import timedelta
 
 from detect.canon import canonical_hash
 from detect.rules.brute_force import _as_dict, _parse_ts
+from schemas.normalized_event import EVENT_TYPE_AUTH
 
 RULE_NAME = "impossible_travel"
-RULE_VERSION = "1.0.0"
+RULE_VERSION = "1.1.0"
 EARTH_RADIUS_KM = 6371.0088
 
 
@@ -97,7 +106,8 @@ def detect_with_stats(events, cfg: TravelConfig, geolocate, geo_info: dict):
     """Return (findings, stats). `stats` is for validation reports only."""
     rows = sorted(
         ((_parse_ts(e["timestamp_utc"]), e) for e in map(_as_dict, events)
-         if e.get("outcome") == "success" and e.get("account") is not None
+         if e.get("event_type") == EVENT_TYPE_AUTH
+         and e.get("outcome") == "success" and e.get("account") is not None
          and e.get("source_ip") is not None),
         key=lambda r: (r[0], str(r[1]["event_id"])),
     )
