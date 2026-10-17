@@ -34,3 +34,5 @@ id_ed25519
 
 # Offline IP geolocation databases: large and separately licensed
 *.mmdb
+
+demo_out/
