@@ -87,6 +87,23 @@ This creates a fresh SQLite database from `schemas/schema.sql`. The schema is fr
 
 ### Run the app
 
+Initialize the shared database and add a user you choose for the demo login:
+
+```bash
+python schemas/init_db.py
+python scripts/create_user.py --user-id examiner --display-name "Demo Examiner" --role examiner
+```
+
+The app reads the configured database (`data/stamped.db` by default; override it with `STAMPED_DB_PATH`). Sign in using a registered user ID; switch roles by signing in as a different registered user. This is a demo role switch, not password authentication. The app does not create sample users, evidence, or findings.
+
+If using the prosecutor role, create a pseudonym key once:
+
+```bash
+python -c "from access import Pseudonymizer; Pseudonymizer.generate_key_file('keys/pseudonym.key')"
+```
+
+Alternatively, set `STAMPED_PSEUDONYM_KEY` to an existing key file. Keep that secret out of git.
+
 ```bash
 streamlit run app/main.py
 ```

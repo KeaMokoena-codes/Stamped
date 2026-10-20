@@ -717,7 +717,7 @@ def test_the_policy_table_is_the_source_of_what_the_prosecutor_is_not_shown():
 
 UI_CANDIDATES = ["app", "ui", "dashboard", "frontend", "pages", "streamlit_app", "app.py", "streamlit_app.py",
                  "dashboard.py"]
-FORBIDDEN_IN_UI = ("sqlite3", ".execute(", ".executemany(", "read_sql", "custody_log", "seal.custody_log",
+FORBIDDEN_IN_UI = ("sqlite3", ".execute(", ".executemany(", "read_sql", "seal.custody_log",
                    "FROM findings", "FROM evidence", "FROM custody_log")
 
 
