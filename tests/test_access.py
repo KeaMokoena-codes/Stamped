@@ -717,8 +717,70 @@ def test_the_policy_table_is_the_source_of_what_the_prosecutor_is_not_shown():
 
 UI_CANDIDATES = ["app", "ui", "dashboard", "frontend", "pages", "streamlit_app", "app.py", "streamlit_app.py",
                  "dashboard.py"]
-FORBIDDEN_IN_UI = ("sqlite3", ".execute(", ".executemany(", "read_sql", "seal.custody_log",
-                   "FROM findings", "FROM evidence", "FROM custody_log")
+FORBIDDEN_UI_IMPORTS = {"sqlite3", "pandas"}
+FORBIDDEN_UI_CALLS = {"execute", "executemany", "read_sql", "read_sql_query"}
+FORBIDDEN_UI_QUERIES = ("FROM findings", "FROM evidence", "FROM custody_log")
+
+
+def _ui_database_violations(source, display_name):
+    tree = ast.parse(source)
+    imported = {
+        node.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for node in node.names
+    }
+    imported.update(
+        node.module.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    )
+    direct_db_calls = {
+        node.func.attr
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    direct_db_calls.update(
+        node.func.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    )
+    violations = [
+        f"{display_name}: imports {module}"
+        for module in imported & FORBIDDEN_UI_IMPORTS
+    ]
+    violations.extend(
+        f"{display_name}: calls {call}"
+        for call in direct_db_calls & FORBIDDEN_UI_CALLS
+    )
+    violations.extend(
+        f"{display_name}: embeds SQL {query!r}"
+        for query in FORBIDDEN_UI_QUERIES
+        if query in source
+    )
+    return violations
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import sqlite3\nconn = sqlite3.connect('case.db')\n",
+        "import sqlite3\nconn.execute('SELECT * FROM evidence')\n",
+        "from pandas import read_sql\n",
+        "rows = read_sql_query('SELECT * FROM findings', conn)\n",
+    ],
+)
+def test_ui_database_guardrail_rejects_direct_database_access(source):
+    assert _ui_database_violations(source, "example.py")
+
+
+def test_ui_database_guardrail_allows_access_layer_calls_and_documentation():
+    source = (
+        "from access import get_custody_log\n"
+        "rows = get_custody_log(conn, role, actor)\n"
+        "# custody_log is a dataset exposed through access functions.\n"
+    )
+    assert _ui_database_violations(source, "example.py") == []
 
 
 def test_DOD_the_ui_reads_case_data_only_through_the_access_layer():
@@ -730,8 +792,10 @@ def test_DOD_the_ui_reads_case_data_only_through_the_access_layer():
     for target in found:
         files = [target] if target.is_file() else list(target.rglob("*.py"))
         for file in files:
-            text = file.read_text(encoding="utf-8", errors="ignore")
-            offenders += [f"{file.relative_to(REPO)}: {bad}" for bad in FORBIDDEN_IN_UI if bad in text]
+            source = file.read_text(encoding="utf-8", errors="ignore")
+            offenders.extend(
+                _ui_database_violations(source, str(file.relative_to(REPO)))
+            )
     assert not offenders, f"UI code must call access.* instead of querying the database: {offenders}"
 
 
