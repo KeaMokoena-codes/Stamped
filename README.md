@@ -110,6 +110,8 @@ streamlit run app/main.py
 
 The Timeline view rebuilds events from verified auth-log and CloudTrail parser artifacts linked to sealed evidence, merges them with persisted findings in chronological order, and exposes each entry's provenance and details. The view fails visibly if a sealed source or parser output no longer matches its recorded hashes.
 
+The Verification view's clearly separated `demo: simulate tampering` control is currently non-mutating. It will remain that way until the demo case is isolated and the real verifier is wired to it.
+
 ### Run the independent verifier
 
 The verifier is standalone and has no dependency on the running app — it's meant to be run by anyone (a judge, a defence expert) who wants to check a case independently.

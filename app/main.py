@@ -233,6 +233,17 @@ def verification_page() -> None:
         "Verification is not reported by this app skeleton. Use the independent verifier "
         "with an exported case package to check the hash chain, signatures, and anchors."
     )
+    with st.container(border=True):
+        st.subheader("Demo only: isolated tamper-detection demo")
+        st.warning(
+            "This control is separate from real evidence handling. The demo workflow is "
+            "not implemented yet and this button does not modify any case data."
+        )
+        if st.button("demo: simulate tampering", key="stamped_simulate_tampering"):
+            st.info(
+                "No data was changed. Demo-case isolation and verifier execution are not "
+                "implemented yet."
+            )
 
 
 def reports_page() -> None:
