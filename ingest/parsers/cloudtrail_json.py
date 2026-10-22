@@ -156,6 +156,29 @@ def _extract_raw_records(raw_bytes: bytes) -> Tuple[List[Any], int]:
         return raw_list, unparsed
 
 
+def parse_cloudtrail_bytes(
+    raw_bytes: bytes,
+    source_evidence_id: str,
+) -> Tuple[List[NormalizedEvent], Dict[str, int]]:
+    """Parse CloudTrail bytes without writing artifacts or custody entries."""
+    raw_list, unparsed_records = _extract_raw_records(raw_bytes)
+    events: List[NormalizedEvent] = []
+    total_records = len(raw_list) + unparsed_records
+
+    for index, record in enumerate(raw_list):
+        event, is_unparsed = parse_cloudtrail_record(record, index, source_evidence_id)
+        if is_unparsed:
+            unparsed_records += 1
+        elif event is not None:
+            events.append(event)
+
+    return events, {
+        "total_records": total_records,
+        "parsed_events": len(events),
+        "unparsed_records": unparsed_records,
+    }
+
+
 def parse_and_record_cloudtrail(
     conn: sqlite3.Connection,
     file_path: Path | str,
@@ -172,27 +195,11 @@ def parse_and_record_cloudtrail(
 
     raw_bytes = path.read_bytes()
     input_hash = hashlib.sha256(raw_bytes).hexdigest()
-
-    raw_list, unparsed_records = _extract_raw_records(raw_bytes)
-    events: List[NormalizedEvent] = []
-    total_records = len(raw_list) + unparsed_records
-
-    for idx, rec in enumerate(raw_list):
-        event, is_unparsed = parse_cloudtrail_record(rec, idx, source_evidence_id)
-        if is_unparsed:
-            unparsed_records += 1
-        elif event is not None:
-            events.append(event)
+    events, stats = parse_cloudtrail_bytes(raw_bytes, source_evidence_id)
 
     serialized_events = [asdict(e) for e in events]
     output_hash = canonical_hash(serialized_events)
     artifact_id = f"art-{output_hash[:16]}"
-
-    stats = {
-        "total_records": total_records,
-        "parsed_events": len(events),
-        "unparsed_records": unparsed_records,
-    }
 
     now_utc = datetime.now(timezone.utc).isoformat()
     metadata_json = canonical_json(stats)
@@ -228,7 +235,7 @@ def parse_and_record_cloudtrail(
             "tool_name": TOOL_NAME,
             "tool_version": TOOL_VERSION,
             "events_count": len(events),
-            "unparsed_count": unparsed_records,
+            "unparsed_count": stats["unparsed_records"],
         },
     )
 

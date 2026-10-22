@@ -100,6 +100,50 @@ def parse_auth_line(
     return event, False, month
 
 
+def parse_auth_log_bytes(
+    raw_bytes: bytes,
+    source_evidence_id: str,
+    base_year: int = 2026,
+) -> Tuple[List[NormalizedEvent], Dict[str, int]]:
+    """Parse auth-log bytes without writing artifacts or custody entries."""
+    lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
+    events: List[NormalizedEvent] = []
+    unparsed_lines = 0
+    ignored_lines = 0
+    current_year = base_year
+    previous_month: Optional[int] = None
+
+    for line_number, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        if not stripped:
+            ignored_lines += 1
+            continue
+
+        match = LINE_RE.match(stripped)
+        if match and match.group("mon") in MONTHS:
+            line_month = MONTHS[match.group("mon")]
+            if previous_month is not None and line_month < previous_month:
+                current_year += 1
+            previous_month = line_month
+
+        event, is_unparsed, _ = parse_auth_line(
+            stripped, line_number, source_evidence_id, current_year
+        )
+        if is_unparsed:
+            unparsed_lines += 1
+        elif event is not None:
+            events.append(event)
+        else:
+            ignored_lines += 1
+
+    return events, {
+        "total_lines": len(lines),
+        "parsed_events": len(events),
+        "ignored_lines": ignored_lines,
+        "unparsed_lines": unparsed_lines,
+    }
+
+
 def parse_and_record_auth_log(
     conn: sqlite3.Connection,
     file_path: Path | str,
@@ -119,49 +163,14 @@ def parse_and_record_auth_log(
 
     raw_bytes = path.read_bytes()
     input_hash = hashlib.sha256(raw_bytes).hexdigest()
-
-    lines = raw_bytes.decode("utf-8", errors="replace").splitlines()
-    events: List[NormalizedEvent] = []
-    unparsed_lines = 0
-    ignored_lines = 0
-    cur_year = base_year
-    prev_month: Optional[int] = None
-
-    for idx, line in enumerate(lines, start=1):
-        stripped = line.strip()
-        if not stripped:
-            ignored_lines += 1
-            continue
-
-        # Peek month to check year rollover before constructing timestamp
-        m = LINE_RE.match(stripped)
-        if m and m.group("mon") in MONTHS:
-            line_month = MONTHS[m.group("mon")]
-            if prev_month is not None and line_month < prev_month:
-                cur_year += 1
-            prev_month = line_month
-
-        event, is_unparsed, _ = parse_auth_line(stripped, idx, source_evidence_id, cur_year)
-        if is_unparsed:
-            unparsed_lines += 1
-        elif event is not None:
-            events.append(event)
-        else:
-            ignored_lines += 1
+    events, stats = parse_auth_log_bytes(raw_bytes, source_evidence_id, base_year)
 
     serialized_events = [asdict(e) for e in events]
     output_hash = canonical_hash(serialized_events)
     artifact_id = f"art-{output_hash[:16]}"
 
-    stats = {
-        "total_lines": len(lines),
-        "parsed_events": len(events),
-        "ignored_lines": ignored_lines,
-        "unparsed_lines": unparsed_lines,
-    }
-
     now_utc = datetime.now(timezone.utc).isoformat()
-    metadata_json = canonical_json(stats)
+    metadata_json = canonical_json({**stats, "base_year": base_year})
 
     conn.execute(
         """
@@ -194,8 +203,8 @@ def parse_and_record_auth_log(
             "tool_name": TOOL_NAME,
             "tool_version": TOOL_VERSION,
             "events_count": len(events),
-            "ignored_count": ignored_lines,
-            "unparsed_count": unparsed_lines,
+            "ignored_count": stats["ignored_lines"],
+            "unparsed_count": stats["unparsed_lines"],
         },
     )
 

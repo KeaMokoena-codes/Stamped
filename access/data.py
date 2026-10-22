@@ -29,17 +29,28 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from dataclasses import asdict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 
 from access.masking import Pseudonymizer, project_records, role_pseudonymizes
 from access.roles import (CUSTODY_FIELDS, EVIDENCE_FIELDS, FINDING_FIELDS, AccessDenied, AccessError, Action,
                           Resource, Role, UnknownRoleError, can, parse_role, timeline_spec)
+from detect.canon import canonical_hash
+from ingest.parsers.auth_log import TOOL_NAME as AUTH_LOG_TOOL, TOOL_VERSION as AUTH_LOG_VERSION
+from ingest.parsers.auth_log import parse_auth_log_bytes
+from ingest.parsers.cloudtrail_json import TOOL_NAME as CLOUDTRAIL_TOOL, TOOL_VERSION as CLOUDTRAIL_VERSION
+from ingest.parsers.cloudtrail_json import parse_cloudtrail_bytes
 from ingest.timeline import build_timeline, load_findings_from_db
 from seal.custody_log import append_entry
 
 MAX_LOGGED_IDS = 100
 INVALID_ROLE_LABEL = "invalid"
+PARSER_OUTPUTS = {
+    AUTH_LOG_TOOL: (AUTH_LOG_VERSION, parse_auth_log_bytes),
+    CLOUDTRAIL_TOOL: (CLOUDTRAIL_VERSION, parse_cloudtrail_bytes),
+}
 
 _EVIDENCE_COLUMNS = ("evidence_id", "content_hash", "source", "collector", "original_name",
                      "captured_at", "sealed_at", "sealed_path", "metadata_json")
@@ -51,6 +62,10 @@ _CUSTODY_COLUMNS = ("entry_id", "timestamp_utc", "actor", "role", "action", "evi
 
 class AccessLogError(AccessError):
     """The custody entry for this access could not be written, so the data was NOT released."""
+
+
+class TimelineSourceError(AccessError):
+    """A parser artifact could not be reproduced from its sealed source evidence."""
 
 
 @dataclass(frozen=True)
@@ -221,6 +236,91 @@ def _build_timeline(conn, role: Role, pz, *, events=(), evidence_id=None, **_):
     return rows, {"events": n_events, "findings": len(rows) - n_events, "evidence_ids": ids, "ids_truncated": truncated}
 
 
+def _load_parser_events(conn: sqlite3.Connection, evidence_id=None) -> list:
+    clauses = ["a.tool_name IN (?, ?)"]
+    params = [AUTH_LOG_TOOL, CLOUDTRAIL_TOOL]
+    if evidence_id is not None:
+        clauses.append("e.evidence_id = ?")
+        params.append(evidence_id)
+
+    rows = conn.execute(
+        "SELECT e.evidence_id, e.sealed_path, a.tool_name, a.tool_version, "
+        "a.input_hash, a.output_hash, a.metadata_json FROM evidence e "
+        "JOIN artifacts a ON a.source_evidence_id = e.evidence_id "
+        f"WHERE {' AND '.join(clauses)} "
+        "ORDER BY e.evidence_id, a.tool_name, a.artifact_id",
+        params,
+    ).fetchall()
+
+    events = []
+    for (
+        source_id,
+        sealed_path,
+        tool_name,
+        tool_version,
+        input_hash,
+        output_hash,
+        metadata_json,
+    ) in rows:
+        expected_version, parser = PARSER_OUTPUTS[tool_name]
+        path = Path(sealed_path)
+        if not path.is_file():
+            raise TimelineSourceError(
+                f"Cannot rebuild {tool_name} output for evidence {source_id}: "
+                f"sealed source file is missing at {path}."
+            )
+        if tool_version != expected_version:
+            raise TimelineSourceError(
+                f"Cannot rebuild {tool_name} output for evidence {source_id}: "
+                f"artifact version {tool_version!r} does not match installed parser "
+                f"version {expected_version!r}."
+            )
+
+        try:
+            raw_bytes = path.read_bytes()
+        except OSError as exc:
+            raise TimelineSourceError(
+                f"Cannot read sealed source file for evidence {source_id}: {exc}"
+            ) from exc
+
+        if hashlib.sha256(raw_bytes).hexdigest() != input_hash:
+            raise TimelineSourceError(
+                f"Sealed source bytes for evidence {source_id} do not match "
+                f"the recorded {tool_name} input hash."
+            )
+
+        if tool_name == AUTH_LOG_TOOL:
+            parser_metadata = _parsed(metadata_json)
+            base_year = parser_metadata.get("base_year", 2026)
+            if isinstance(base_year, bool) or not isinstance(base_year, int):
+                raise TimelineSourceError(
+                    f"Cannot rebuild auth-log output for evidence {source_id}: "
+                    "the recorded parser year is invalid."
+                )
+            parsed_events, _ = parser(raw_bytes, source_id, base_year)
+        else:
+            parsed_events, _ = parser(raw_bytes, source_id)
+        reproduced_output_hash = canonical_hash([asdict(event) for event in parsed_events])
+        if reproduced_output_hash != output_hash:
+            raise TimelineSourceError(
+                f"Reparsed {tool_name} output for evidence {source_id} does not match "
+                "the recorded artifact output hash."
+            )
+        events.extend(parsed_events)
+
+    return events
+
+
+def _build_persisted_timeline(conn, role: Role, pz, *, evidence_id=None, **_):
+    return _build_timeline(
+        conn,
+        role,
+        pz,
+        events=_load_parser_events(conn, evidence_id),
+        evidence_id=evidence_id,
+    )
+
+
 def _build_custody(conn, role: Role, pz, *, evidence_id=None, **_):
     cols = _visible_columns(_CUSTODY_COLUMNS, CUSTODY_FIELDS, role, always=("details_json",))
     where, params = (" WHERE evidence_id = ?", (evidence_id,)) if evidence_id else ("", ())
@@ -291,6 +391,21 @@ def get_timeline(conn, role, actor, events, *, evidence_id=None,
                  events=events, evidence_id=evidence_id)
 
 
+def get_timeline_from_db(conn, role, actor, *, evidence_id=None,
+                         pseudonymizer: Pseudonymizer | None = None) -> list[dict]:
+    """Rebuild a role-projected timeline from parser artifacts and persisted findings."""
+    return _view(
+        conn,
+        role,
+        actor,
+        Resource.TIMELINE,
+        "timeline",
+        _build_persisted_timeline,
+        pseudonymizer,
+        evidence_id=evidence_id,
+    )
+
+
 def get_custody_log(conn, role, actor, *, evidence_id=None, pseudonymizer: Pseudonymizer | None = None) -> list[dict]:
     return _view(conn, role, actor, Resource.CUSTODY_LOG, "custody_log", _build_custody, pseudonymizer,
                  evidence_id=evidence_id)
@@ -306,6 +421,20 @@ def export_timeline(conn, role, actor, events, *, evidence_id=None,
                     pseudonymizer: Pseudonymizer | None = None) -> ExportResult:
     return _export(conn, role, actor, Resource.TIMELINE, "timeline", _build_timeline, pseudonymizer,
                    events=events, evidence_id=evidence_id)
+
+
+def export_timeline_from_db(conn, role, actor, *, evidence_id=None,
+                            pseudonymizer: Pseudonymizer | None = None) -> ExportResult:
+    return _export(
+        conn,
+        role,
+        actor,
+        Resource.TIMELINE,
+        "timeline",
+        _build_persisted_timeline,
+        pseudonymizer,
+        evidence_id=evidence_id,
+    )
 
 
 def export_custody_log(conn, role, actor, *, evidence_id=None,

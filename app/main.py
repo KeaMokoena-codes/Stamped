@@ -16,11 +16,11 @@ from access import (
     connect_database,
     export_custody_log,
     export_findings,
-    export_timeline,
+    export_timeline_from_db,
     get_custody_log,
     get_evidence,
     get_findings,
-    get_timeline,
+    get_timeline_from_db,
     resolve_role,
 )
 
@@ -126,10 +126,7 @@ def case_overview() -> None:
 
 def timeline_page() -> None:
     st.header("Timeline")
-    st.caption(
-        "The shared database currently persists findings, not normalized ingestion events. "
-        "This view shows persisted findings in timeline order."
-    )
+    st.caption("Events from recorded auth-log and CloudTrail parser artifacts, merged with persisted findings.")
     identity = _page_identity()
     if identity is None:
         return
@@ -138,15 +135,40 @@ def timeline_page() -> None:
     try:
         pseudonymizer = _load_pseudonymizer()
         with connect_database() as connection:
-            entries = get_timeline(connection, role, actor, events=[], pseudonymizer=pseudonymizer)
+            entries = get_timeline_from_db(
+                connection, role, actor, pseudonymizer=pseudonymizer
+            )
     except (AccessError, DatabaseError, OSError, ValueError) as exc:
         _load_error(exc)
         return
 
     if entries:
-        st.dataframe(entries, width="stretch")
+        st.caption(f"{len(entries)} chronological timeline entries")
+        for entry in entries:
+            is_finding = entry.get("entry_type") == "finding"
+            marker = "🚩 Finding" if is_finding else "• Event"
+            summary = entry.get("summary", "Timeline entry")
+            label = f"{marker} · {entry.get('timestamp_utc', 'Unknown time')} · {summary}"
+            with st.expander(label):
+                if is_finding:
+                    severity = str(entry.get("severity", "medium")).lower()
+                    message = f"{severity.title()} severity finding"
+                    if severity in {"critical", "high"}:
+                        st.error(message)
+                    else:
+                        st.warning(message)
+                else:
+                    st.caption(
+                        f"{entry.get('service', 'unknown')} · "
+                        f"{entry.get('event_type', 'event')} · "
+                        f"{entry.get('outcome', 'unknown')}"
+                    )
+                st.markdown("**Provenance**")
+                st.json(entry.get("provenance", {}))
+                st.markdown("**Details**")
+                st.json(entry.get("details", {}))
     else:
-        st.info("No persisted findings are available for the timeline.")
+        st.info("No parser artifacts or findings are recorded in the shared database yet.")
 
 
 def findings_page() -> None:
@@ -221,7 +243,7 @@ def reports_page() -> None:
     actor, role = identity
     exports = {
         "Findings": (Resource.FINDINGS, export_findings),
-        "Timeline": (Resource.TIMELINE, export_timeline),
+        "Timeline": (Resource.TIMELINE, export_timeline_from_db),
         "Custody history": (Resource.CUSTODY_LOG, export_custody_log),
     }
     available = {
@@ -239,14 +261,9 @@ def reports_page() -> None:
         try:
             pseudonymizer = _load_pseudonymizer()
             with connect_database() as connection:
-                if resource is Resource.TIMELINE:
-                    result = exporter(
-                        connection, role, actor, events=[], pseudonymizer=pseudonymizer
-                    )
-                else:
-                    result = exporter(
-                        connection, role, actor, pseudonymizer=pseudonymizer
-                    )
+                result = exporter(
+                    connection, role, actor, pseudonymizer=pseudonymizer
+                )
         except (AccessError, DatabaseError, OSError, ValueError) as exc:
             _load_error(exc)
             return
