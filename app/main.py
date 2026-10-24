@@ -234,6 +234,71 @@ def verification_page() -> None:
         "with an exported case package to check the hash chain, signatures, and anchors."
     )
 
+    st.divider()
+    st.subheader("Demo: Simulate Tampering")
+    st.caption(
+        "This operates on an isolated copy of the database. It bypasses SQLite triggers to simulate "
+        "a direct disk attack, modifies a custody record, and runs the standalone verifier."
+    )
+
+    if st.button("Run Tamper Demo", type="primary"):
+        import shutil
+        import subprocess
+        import sys
+        import sqlite3
+        from pathlib import Path
+        
+        repo_root = Path(__file__).resolve().parent.parent
+        real_db = repo_root / "data" / "stamped.db"
+        demo_db = repo_root / "data" / "demo_tampered.db"
+        
+        with st.spinner("1. Isolating database..."):
+            if demo_db.exists():
+                try:
+                    demo_db.unlink()
+                except PermissionError:
+                    st.error("File lock error: Could not delete old demo DB. Restart Streamlit.")
+                    return
+            shutil.copy2(real_db, demo_db)
+        
+        with st.spinner("2. Simulating offline tampering (bypassing SQLite triggers)..."):
+            conn = sqlite3.connect(demo_db)
+            try:
+                # Drop guardrails to simulate a hex-editor/raw disk modification
+                for trigger in ["custody_log_no_update", "custody_log_no_delete", "custody_log_no_replace"]:
+                    conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+                
+                # Tamper with an early entry to break the cryptographic hash chain
+                conn.execute("""
+                    UPDATE custody_log 
+                    SET actor = 'malicious_insider', action = 'tampered_record' 
+                    WHERE entry_id = (SELECT MIN(entry_id) + 2 FROM custody_log)
+                """)
+                conn.commit()
+            except Exception as e:
+                st.error(f"Failed to tamper: {e}")
+                return
+            finally:
+                conn.close()
+            st.success("Tampering successful: Record modified without updating subsequent chain hashes.")
+
+        with st.spinner("3. Running independent verifier..."):
+            verifier_script = repo_root / "verifier" / "verify.py"
+            
+            # Based on Issue #8, verify.py expects "--case-export" 
+            # If Alex/Kea changed the CLI args in verify.py, adjust this list accordingly.
+            cmd = [sys.executable, str(verifier_script), "--case-export", str(demo_db)]
+            
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            st.markdown("### Verifier Output")
+            if result.returncode == 0:
+                st.error("❌ Verification PASSED (This shouldn't happen on tampered data!)")
+            else:
+                st.success("✅ Verification FAILED (The verifier successfully caught the tampering!)")
+            
+            # Display the exact terminal output for the judges
+            st.code(result.stdout + result.stderr, language="text")
 
 def reports_page() -> None:
     st.header("Reports")
