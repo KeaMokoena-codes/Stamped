@@ -1,0 +1,24 @@
+{
+  "format_version": "stamped-bundle/1",
+  "bundle_id": "bundle-2026-10-12-0001",
+  "source_system": "demo-alert-source",
+  "alert_type": "failed_console_login",
+  "alert_id": "alert-0001",
+  "alert_timestamp": "2026-10-12T10:25:00+00:00",
+  "captured_at": "2026-10-12T10:26:12+00:00",
+  "collector": "capture-listener@lab-01",
+  "files": [
+    {
+      "name": "cloudtrail_sample.json",
+      "kind": "cloudtrail_json",
+      "path": "cloudtrail_sample.json"
+    },
+    {
+      "name": "auth.log",
+      "kind": "auth_log",
+      "base_year": 2026,
+      "content_b64": "T2N0IDEyIDEwOjE0OjAwIGxhYi1ob3N0IHNzaGRbMTIwMV06IEZhaWxlZCBwYXNzd29yZCBmb3IgYWRtaW4gZnJvbSAxOTIuMTY4LjEuNTAgcG9ydCA1MjE0NCBzc2gyCk9jdCAxMiAxMDoxNDozMCBsYWItaG9zdCBzc2hkWzEyMDNdOiBGYWlsZWQgcGFzc3dvcmQgZm9yIGFkbWluIGZyb20gMTkyLjE2OC4xLjUwIHBvcnQgNTIxNTAgc3NoMgpPY3QgMTIgMTA6MTU6MDAgbGFiLWhvc3Qgc3NoZFsxMjA3XTogQWNjZXB0ZWQgcGFzc3dvcmQgZm9yIGFiZGkgZnJvbSAxOTIuMTY4LjEuMjAgcG9ydCA0MDEyMiBzc2gyCg==",
+      "sha256": "1334241b9ef7f649f012d22479dc35d7f6d8d4885da585f155141862df0919d1"
+    }
+  ]
+}
