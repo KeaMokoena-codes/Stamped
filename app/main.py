@@ -245,7 +245,43 @@ def verification_page() -> None:
                 "implemented yet."
             )
 
+    st.divider()
+    st.subheader("Demo: Simulate Tampering")
+    st.caption(
+        "This operates on an isolated copy of the database. It bypasses SQLite triggers to simulate "
+        "a direct disk attack, modifies a custody record, and runs the standalone verifier."
+    )
 
+    if st.button("Run Tamper Demo", type="primary"):
+        import subprocess
+        import sys
+        from pathlib import Path
+        
+        repo_root = Path(__file__).resolve().parent.parent
+        demo_db = repo_root / "data" / "demo_tampered.db"
+        tamper_script = repo_root / "scripts" / "simulate_tamper.py"
+        verifier_script = repo_root / "verifier" / "verify.py"
+
+        with st.spinner("1 & 2. Isolating database and simulating offline tampering..."):
+            tamper_result = subprocess.run([sys.executable, str(tamper_script)], capture_output=True, text=True)
+            if tamper_result.returncode != 0:
+                st.error(f"Failed to tamper database: {tamper_result.stdout}\n{tamper_result.stderr}")
+                return
+            st.success("Tampering successful: Record modified without updating subsequent chain hashes.")
+
+        with st.spinner("3. Running independent verifier..."):
+            cmd = [sys.executable, str(verifier_script), "--case-export", str(demo_db)]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            st.markdown("### Verifier Output")
+            if result.returncode == 0:
+                st.error("❌ Verification PASSED (This shouldn't happen on tampered data!)")
+            else:
+                st.success("✅ Verification FAILED (The verifier successfully caught the tampering!)")
+            
+            st.code(result.stdout + result.stderr, language="text")
+
+            
 def reports_page() -> None:
     st.header("Reports")
     identity = _page_identity()

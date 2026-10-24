@@ -89,9 +89,11 @@ This creates a fresh SQLite database from `schemas/schema.sql`. The schema is fr
 
 Initialize the shared database and add a user you choose for the demo login:
 
+> **Note:** To prevent `ModuleNotFoundError: No module named 'access'`, always execute scripts from the repository root using the Python module flag (`-m`).
+
 ```bash
 python schemas/init_db.py
-python scripts/create_user.py --user-id examiner --display-name "Demo Examiner" --role examiner
+python -m scripts.create_user --user-id examiner1 --display-name "Demo Examiner" --role examiner
 ```
 
 The app reads the configured database (`data/stamped.db` by default; override it with `STAMPED_DB_PATH`). Sign in using a registered user ID; switch roles by signing in as a different registered user. This is a demo role switch, not password authentication. The app does not create sample users, evidence, or findings.
@@ -104,13 +106,18 @@ python -c "from access import Pseudonymizer; Pseudonymizer.generate_key_file('ke
 
 Alternatively, set `STAMPED_PSEUDONYM_KEY` to an existing key file. Keep that secret out of git.
 
+To run the Streamlit dashboard correctly, you must use the run_app.py wrapper at the root of the project, which automatically configures the Python path.
+
+Create a file named run_app.py in the root of the repository if it doesn't already exist (It does Exist!).
+
+Then, start the app using the wrapper:
+
 ```bash
-streamlit run app/main.py
+python -m streamlit run run_app.py
 ```
 
 The Timeline view rebuilds events from verified auth-log and CloudTrail parser artifacts linked to sealed evidence, merges them with persisted findings in chronological order, and exposes each entry's provenance and details. The view fails visibly if a sealed source or parser output no longer matches its recorded hashes.
 
-The Verification view's clearly separated `demo: simulate tampering` control is currently non-mutating. It will remain that way until the demo case is isolated and the real verifier is wired to it.
 
 ### Run the independent verifier
 
