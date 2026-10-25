@@ -2,19 +2,12 @@
 
 import argparse
 import json
-import shutil
 import sqlite3
-import tempfile
 from pathlib import Path
 
 from schemas.init_db import SCHEMA_PATH
 from seal.custody_log import append_entry
 
-GUARD_TRIGGERS = (
-    "custody_log_no_update",
-    "custody_log_no_delete",
-    "custody_log_no_replace",
-)
 TAMPERED_ENTRY_ID = 2
 
 
@@ -23,26 +16,45 @@ def prepare_demo_case(case_dir: Path) -> None:
         raise FileExistsError(f"Refusing to overwrite existing demo case: {case_dir}")
     case_dir.mkdir(parents=True)
 
-    with tempfile.TemporaryDirectory(prefix="stamped-demo-seed-") as seed_dir:
-        seed_db = Path(seed_dir) / "stamped.db"
-        connection = sqlite3.connect(seed_db)
-        try:
-            connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
-            for sequence in range(1, 4):
-                append_entry(
-                    connection,
-                    actor="demo-operator",
-                    role="examiner",
-                    action=f"demo_action_{sequence}",
-                    evidence_id="DEMO-ONLY",
-                    details={"demo_case": True, "sequence": sequence},
-                )
-            connection.commit()
-        finally:
-            connection.close()
+    seed = sqlite3.connect(":memory:")
+    try:
+        seed.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        for sequence in range(1, 4):
+            append_entry(
+                seed,
+                actor="demo-operator",
+                role="examiner",
+                action=f"demo_action_{sequence}",
+                evidence_id="DEMO-ONLY",
+                details={"demo_case": True, "sequence": sequence},
+            )
+        seed.commit()
+        entries = seed.execute(
+            "SELECT entry_id, timestamp_utc, actor, role, action, evidence_id, "
+            "artifact_id, details_json, prev_hash, entry_hash "
+            "FROM custody_log ORDER BY entry_id"
+        ).fetchall()
+    finally:
+        seed.close()
 
-        demo_db = case_dir / "stamped.db"
-        shutil.copyfile(seed_db, demo_db)
+    demo_db = case_dir / "stamped.db"
+    connection = sqlite3.connect(demo_db)
+    try:
+        connection.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+        for entry in entries:
+            row = list(entry)
+            if row[0] == TAMPERED_ENTRY_ID:
+                row[2] = "tampered-demo-actor"
+            connection.execute(
+                "INSERT INTO custody_log "
+                "(entry_id, timestamp_utc, actor, role, action, evidence_id, "
+                "artifact_id, details_json, prev_hash, entry_hash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                row,
+            )
+        connection.commit()
+    finally:
+        connection.close()
 
     (case_dir / "anchors").mkdir()
     public_dir = case_dir / "public"
@@ -53,23 +65,6 @@ def prepare_demo_case(case_dir: Path) -> None:
     (public_dir / "mldsa65_public.bin").write_bytes(
         b"DEMO ONLY - NOT AN ML-DSA PUBLIC KEY"
     )
-
-    connection = sqlite3.connect(demo_db)
-    try:
-        for trigger in GUARD_TRIGGERS:
-            connection.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-        cursor = connection.execute(
-            "UPDATE custody_log SET actor = ? WHERE entry_id = ?",
-            ("tampered-demo-actor", TAMPERED_ENTRY_ID),
-        )
-        if cursor.rowcount != 1:
-            raise RuntimeError(
-                f"Expected to alter demo entry #{TAMPERED_ENTRY_ID}, "
-                f"but changed {cursor.rowcount} rows."
-            )
-        connection.commit()
-    finally:
-        connection.close()
 
 
 def main(argv: list[str] | None = None) -> int:
