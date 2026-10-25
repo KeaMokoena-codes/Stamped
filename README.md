@@ -127,6 +127,8 @@ The verifier is standalone and has no dependency on the running app — it's mea
 python verifier/verify.py --case-export <path-to-exported-case>
 ```
 
+The Verification page's `demo: simulate tampering` button builds a synthetic, disposable case in a temporary directory, alters only that case copy, and invokes this verifier in chain-only mode. It does not read or modify the live case database. Signatures and external anchors are not tested by this demo. The automated end-to-end test repeats the flow three times; the team must still rehearse it live before the pitch.
+
 ## Core demo
 
 The centerpiece of the project: an evidence item sealed in 2026, challenged on appeal in 2041.

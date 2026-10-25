@@ -1,6 +1,10 @@
 """Streamlit entry point for the Stamped case workspace."""
 
+import json
 import os
+import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 import streamlit as st
@@ -215,73 +219,113 @@ def custody_history_page() -> None:
 
 def verification_page() -> None:
     st.header("Verification")
-    identity = _page_identity()
-    if identity is None:
-        return
-    actor, role = identity
-
-    try:
-        pseudonymizer = _load_pseudonymizer()
-        with connect_database() as connection:
-            entries = get_custody_log(connection, role, actor, pseudonymizer=pseudonymizer)
-    except (AccessError, DatabaseError, OSError, ValueError) as exc:
-        _load_error(exc)
+    if _page_identity() is None:
         return
 
-    st.metric("Accessible custody entries", len(entries))
     st.info(
-        "Verification is not reported by this app skeleton. Use the independent verifier "
-        "with an exported case package to check the hash chain, signatures, and anchors."
+        "The demo below runs the independent verifier against a disposable, synthetic case. "
+        "It does not use or modify the live case database."
     )
     with st.container(border=True):
         st.subheader("Demo only: isolated tamper-detection demo")
         st.warning(
-            "This control is separate from real evidence handling. The demo workflow is "
-            "not implemented yet and this button does not modify any case data."
+            "This separate demo creates a fresh case with synthetic records, tampers only "
+            "with its disposable copy, and checks the hash chain. No real evidence or "
+            "custody log is changed. Signatures and external anchors are not tested."
         )
-        if st.button("demo: simulate tampering", key="stamped_simulate_tampering"):
-            st.info(
-                "No data was changed. Demo-case isolation and verifier execution are not "
-                "implemented yet."
-            )
+        if st.button(
+            "demo: simulate tampering",
+            key="stamped_simulate_tampering",
+            type="primary",
+        ):
+            repository_root = Path(__file__).resolve().parent.parent
+            verifier_path = repository_root / "verifier" / "verify.py"
+            with tempfile.TemporaryDirectory(prefix="stamped-tamper-demo-") as temp_dir:
+                case_dir = Path(temp_dir) / "demo-case"
+                try:
+                    preparation = subprocess.run(
+                        [
+                            sys.executable,
+                            "-m",
+                            "scripts.simulate_tamper",
+                            "--case-dir",
+                            str(case_dir),
+                        ],
+                        cwd=repository_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    if preparation.returncode != 0:
+                        st.error("Could not prepare the isolated demo case.")
+                        st.code(preparation.stdout + preparation.stderr, language="text")
+                        return
 
-    st.divider()
-    st.subheader("Demo: Simulate Tampering")
-    st.caption(
-        "This operates on an isolated copy of the database. It bypasses SQLite triggers to simulate "
-        "a direct disk attack, modifies a custody record, and runs the standalone verifier."
-    )
+                    result = subprocess.run(
+                        [
+                            sys.executable,
+                            str(verifier_path),
+                            "--case-export",
+                            str(case_dir),
+                            "--allow-no-anchors",
+                            "--json",
+                        ],
+                        cwd=repository_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=60,
+                        check=False,
+                    )
+                except (OSError, subprocess.TimeoutExpired) as exc:
+                    st.error(f"The demo command could not complete: {exc}")
+                    return
 
-    if st.button("Run Tamper Demo", type="primary"):
-        import subprocess
-        import sys
-        from pathlib import Path
-        
-        repo_root = Path(__file__).resolve().parent.parent
-        demo_db = repo_root / "data" / "demo_tampered.db"
-        tamper_script = repo_root / "scripts" / "simulate_tamper.py"
-        verifier_script = repo_root / "verifier" / "verify.py"
-
-        with st.spinner("1 & 2. Isolating database and simulating offline tampering..."):
-            tamper_result = subprocess.run([sys.executable, str(tamper_script)], capture_output=True, text=True)
-            if tamper_result.returncode != 0:
-                st.error(f"Failed to tamper database: {tamper_result.stdout}\n{tamper_result.stderr}")
+            st.markdown("### Actual verifier output")
+            verifier_output = result.stdout + result.stderr
+            st.code(verifier_output, language="json")
+            try:
+                report = json.loads(result.stdout)
+            except json.JSONDecodeError as exc:
+                st.error(
+                    "The verifier did not return its expected JSON report "
+                    f"(exit code {result.returncode}): {exc}"
+                )
                 return
-            st.success("Tampering successful: Record modified without updating subsequent chain hashes.")
 
-        with st.spinner("3. Running independent verifier..."):
-            cmd = [sys.executable, str(verifier_script), "--case-export", str(demo_db)]
-            result = subprocess.run(cmd, capture_output=True, text=True)
-            
-            st.markdown("### Verifier Output")
-            if result.returncode == 0:
-                st.error("❌ Verification PASSED (This shouldn't happen on tampered data!)")
+            expected_exit_code = {"PASS": 0, "FAIL": 1, "ERROR": 2}.get(
+                report.get("overall")
+            )
+            if result.returncode != expected_exit_code:
+                st.error(
+                    "The verifier exit code does not match its reported result "
+                    f"(exit code {result.returncode}, result {report.get('overall')!r})."
+                )
+                return
+
+            chain_check = report.get("checks", {}).get("chain", {})
+            broken_entry_id = report.get("broken_entry_id")
+            if (
+                report.get("overall") == "FAIL"
+                and chain_check.get("status") == "FAIL"
+                and isinstance(broken_entry_id, int)
+            ):
+                st.error(
+                    "The verifier detected the tampering. "
+                    f"The first broken custody entry is #{broken_entry_id}."
+                )
+            elif report.get("overall") == "PASS":
+                st.warning(
+                    "The verifier reported PASS; this demo did not produce the expected "
+                    "tamper detection."
+                )
             else:
-                st.success("✅ Verification FAILED (The verifier successfully caught the tampering!)")
-            
-            st.code(result.stdout + result.stderr, language="text")
+                st.error(
+                    "The verifier did not confirm the expected hash-chain tampering. "
+                    f"Reported result: {report.get('overall', 'unknown')}."
+                )
 
-            
+
 def reports_page() -> None:
     st.header("Reports")
     identity = _page_identity()
