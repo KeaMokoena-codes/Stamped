@@ -132,9 +132,15 @@ Note: WeasyPrint requires C++ GTK3 libraries to generate PDFs. If these are miss
 
 How to test the export:
 
-1. Populate the database with the sample demo logs: python -m scripts.repro_demo build data
+1. Populate the database with the sample demo logs:
+```bash
+ python -m scripts.repro_demo build data
+ ```
 
-2. Run the detection scanner to generate findings: python -m detect.reproduce --db data/stamped.db --all
+2. Run the detection scanner to generate findings:
+```bash
+ python -m detect.reproduce --db data/stamped.db --all
+ ```
 
 3. Start the dashboard (python -m streamlit run run_app.py), navigate to the Reports tab, and click "Generate Full Case Report".
 
