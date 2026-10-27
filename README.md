@@ -118,6 +118,26 @@ python -m streamlit run run_app.py
 
 The Timeline view rebuilds events from verified auth-log and CloudTrail parser artifacts linked to sealed evidence, merges them with persisted findings in chronological order, and exposes each entry's provenance and details. The view fails visibly if a sealed source or parser output no longer matches its recorded hashes.
 
+### Generate Custody Reports
+
+The app supports exporting a full chain-of-custody report containing live database hashes, logs, and findings.
+
+**Dependencies:**
+Report generation requires Jinja2 and WeasyPrint. Install them via:
+```bash
+pip install jinja2 weasyprint
+```
+
+Note: WeasyPrint requires C++ GTK3 libraries to generate PDFs. If these are missing (common on Windows), the app will gracefully catch the OSError and fall back to providing an HTML-only download option.
+
+How to test the export:
+
+1. Populate the database with the sample demo logs: python -m scripts.repro_demo build data
+
+2. Run the detection scanner to generate findings: python -m detect.reproduce --db data/stamped.db --all
+
+3. Start the dashboard (python -m streamlit run run_app.py), navigate to the Reports tab, and click "Generate Full Case Report".
+
 
 ### Run the independent verifier
 
