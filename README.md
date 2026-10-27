@@ -123,26 +123,26 @@ The Timeline view rebuilds events from verified auth-log and CloudTrail parser a
 The app supports exporting a full chain-of-custody report containing live database hashes, logs, and findings.
 
 **Dependencies:**
-Report generation requires Jinja2 and WeasyPrint. Install them via:
+Report generation requires Jinja2 and xhtml2pdf (a pure-Python PDF generator guaranteed to work on Windows). Install them via:
 ```bash
-pip install jinja2 weasyprint
+pip install jinja2 xhtml2pdf
 ```
-
-Note: WeasyPrint requires C++ GTK3 libraries to generate PDFs. If these are missing (common on Windows), the app will gracefully catch the OSError and fall back to providing an HTML-only download option.
 
 How to test the export:
 
 1. Populate the database with the sample demo logs:
-```bash
- python -m scripts.repro_demo build data
- ```
+
+```Bash
+python -m scripts.repro_demo build data
+```
 
 2. Run the detection scanner to generate findings:
-```bash
- python -m detect.reproduce --db data/stamped.db --all
- ```
 
-3. Start the dashboard (python -m streamlit run run_app.py), navigate to the Reports tab, and click "Generate Full Case Report".
+```Bash
+python -m detect.reproduce --db data/stamped.db --all
+```
+
+3. Start the dashboard (python -m streamlit run run_app.py), navigate to the Reports tab, input a custom Case ID, and click "Generate Full Case Report".
 
 
 ### Run the independent verifier
