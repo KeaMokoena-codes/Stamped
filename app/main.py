@@ -97,6 +97,14 @@ def _load_error(exc: Exception) -> None:
     st.error(f"Could not load this view: {exc}")
 
 
+def _show_records(title: str, rows: list[dict], empty_message: str) -> None:
+    st.subheader(title)
+    if rows:
+        st.dataframe(rows, width="stretch")
+    else:
+        st.info(empty_message)
+
+
 def case_overview() -> None:
     st.header("Case overview")
     identity = _page_identity()
@@ -109,23 +117,92 @@ def case_overview() -> None:
         with connect_database() as connection:
             evidence = get_evidence(connection, role, actor, pseudonymizer=pseudonymizer)
             findings = get_findings(connection, role, actor, pseudonymizer=pseudonymizer)
+            custody = (
+                get_custody_log(connection, role, actor, pseudonymizer=pseudonymizer)
+                if role is Role.PROSECUTOR
+                else []
+            )
     except (AccessError, DatabaseError, OSError, ValueError) as exc:
         _load_error(exc)
         return
 
-    evidence_metric, findings_metric = st.columns(2)
-    evidence_metric.metric("Evidence items", len(evidence))
-    findings_metric.metric("Findings", len(findings))
-    st.subheader("Evidence")
-    if evidence:
-        st.dataframe(evidence, width="stretch")
+    if role is Role.EXAMINER:
+        st.subheader("Forensic analysis workspace")
+        st.caption("Review the full-fidelity evidence record and the findings derived from it.")
+        evidence_metric, findings_metric = st.columns(2)
+        evidence_metric.metric("Evidence items", len(evidence))
+        findings_metric.metric("Findings", len(findings))
+        _show_records(
+            "Evidence register",
+            evidence,
+            "No evidence items are recorded in the shared database yet.",
+        )
+        _show_records("Analysis findings", findings, "No findings are recorded yet.")
+    elif role is Role.INVESTIGATING_OFFICER:
+        st.subheader("Investigation workspace")
+        st.caption(
+            "Prioritize operational leads and follow the real account and IP identifiers "
+            "available to this role."
+        )
+        high_priority = sum(
+            str(finding.get("severity", "")).lower() in {"critical", "high"}
+            for finding in findings
+        )
+        leads_metric, evidence_metric = st.columns(2)
+        leads_metric.metric("Investigation leads", len(findings))
+        evidence_metric.metric("High-priority leads", high_priority)
+        severities = sorted(
+            {str(finding.get("severity", "unknown")).lower() for finding in findings}
+        )
+        selected_severity = st.selectbox(
+            "Filter leads by severity",
+            ["All"] + severities,
+            key="stamped_investigation_severity",
+        )
+        visible_findings = (
+            findings
+            if selected_severity == "All"
+            else [
+                finding
+                for finding in findings
+                if str(finding.get("severity", "unknown")).lower() == selected_severity
+            ]
+        )
+        _show_records(
+            "Investigative leads",
+            visible_findings,
+            "No findings are recorded yet.",
+        )
+        _show_records(
+            "Evidence available to investigate",
+            evidence,
+            "No evidence items are recorded in the shared database yet.",
+        )
     else:
-        st.info("No evidence items are recorded in the shared database yet.")
-    st.subheader("Findings")
-    if findings:
-        st.dataframe(findings, width="stretch")
-    else:
-        st.info("No findings are recorded in the shared database yet.")
+        st.subheader("Prosecution case brief")
+        st.caption(
+            "Review the masked case findings alongside the evidence schedule and "
+            "documented chain of custody."
+        )
+        serious_findings = sum(
+            str(finding.get("severity", "")).lower() in {"critical", "high"}
+            for finding in findings
+        )
+        findings_metric, serious_metric, custody_metric = st.columns(3)
+        findings_metric.metric("Case findings", len(findings))
+        serious_metric.metric("High-priority findings", serious_findings)
+        custody_metric.metric("Custody entries", len(custody))
+        _show_records("Findings for review", findings, "No findings are recorded yet.")
+        _show_records(
+            "Evidence schedule",
+            evidence,
+            "No evidence items are recorded in the shared database yet.",
+        )
+        _show_records(
+            "Chain of custody",
+            custody,
+            "The shared custody log is empty.",
+        )
 
 
 def timeline_page() -> None:
@@ -419,13 +496,21 @@ def main() -> None:
         "The role is resolved from that database; this demo login is not password authentication."
     )
 
-    if _login_sidebar() is None:
+    identity = _login_sidebar()
+    if identity is None:
         st.info(
             "Initialize the shared database with `python schemas/init_db.py` and add an active "
             "user before signing in. No sample case data is generated by the app."
         )
         return
+    _, role = identity
 
+    workspace_names = {
+        Role.EXAMINER: "Forensic analysis workspace",
+        Role.INVESTIGATING_OFFICER: "Investigation workspace",
+        Role.PROSECUTOR: "Prosecution case brief",
+    }
+    st.sidebar.subheader(workspace_names[role])
     pages = [
         st.Page(case_overview, title="Case overview", default=True),
         st.Page(timeline_page, title="Timeline"),
@@ -434,7 +519,12 @@ def main() -> None:
         st.Page(verification_page, title="Verification"),
         st.Page(reports_page, title="Reports"),
     ]
-    st.navigation(pages, position="sidebar").run()
+    navigation = st.navigation(pages, position="sidebar")
+    previous_role = st.session_state.get("stamped_navigation_role")
+    st.session_state["stamped_navigation_role"] = role.value
+    if previous_role is not None and previous_role != role.value:
+        st.switch_page(pages[0])
+    navigation.run()
 
 
 if __name__ == "__main__":

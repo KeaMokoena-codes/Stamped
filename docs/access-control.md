@@ -36,6 +36,21 @@ already in `.gitignore`):
 Pseudonymizer.generate_key_file("keys/pseudonym.key")         # random, owner-only, refuses to overwrite
 ```
 
+## Role-specific dashboards
+
+The Streamlit landing view is organized around each role's workflow:
+
+* **Examiner:** full-fidelity evidence register and analysis findings, with the verification demo in the sidebar.
+* **Investigating officer:** operational leads, a severity filter, and the evidence available for investigation.
+* **Prosecutor:** a case brief with findings, the evidence schedule, and the chain-of-custody record.
+
+The sidebar identifies the active workflow for the role resolved from the signed-in user. The dashboard tables
+are populated only by the `get_evidence`, `get_findings`, and `get_custody_log` access-layer
+functions. The officer's severity filter is applied only after `get_findings` has returned projected rows.
+Page visibility and navigation are presentation choices, not authorization: opening a page directly or
+manipulating its Streamlit route still executes the same page function and access-layer projection for the
+registered user's role. Do not query case tables from a page or use UI-only masking.
+
 ## Who may do what
 
 `view`, `edit`, `export` per resource. Anything not listed is refused.
