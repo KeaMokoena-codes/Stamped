@@ -4,10 +4,13 @@ import sqlite3
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
+import os
 
 from seal.custody_log import append_entry
 
-DEFAULT_SEALED_DIR = Path(__file__).resolve().parent.parent / "data" / "sealed"
+_fallback_dir = Path(__file__).resolve().parent.parent/ "data"/ "sealed"
+
+DEFAULT_SEALED_DIR = Path(os.getenv("STAMPED_SEALED_DIR", _fallback_dir))
 
 
 class IntakeError(Exception):
