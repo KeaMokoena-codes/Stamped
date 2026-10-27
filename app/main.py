@@ -374,24 +374,25 @@ def reports_page() -> None:
     st.subheader("Formal Custody Report (PDF/HTML)")
     st.caption("Generates a complete chain-of-custody document for the current database state.")
     
-    if st.button("Generate Full Case Report", type="primary"):
+    case_id_input = st.text_input("Enter Case ID for Report:", value="CASE-")
+    
+    if st.button("Generate Full Case Report", type="primary") and case_id_input:
         from report.export_report import generate_full_report
         
         with st.spinner("Compiling live case data..."):
             try:
                 pseudonymizer = _load_pseudonymizer()
-                # Use role.value if role is an Enum, otherwise use role directly
                 role_str = role.value if hasattr(role, 'value') else str(role)
-                html_data, pdf_data, case_id = generate_full_report(role_str, actor, pseudonymizer)
+                html_data, pdf_data = generate_full_report(case_id_input, role_str, actor, pseudonymizer)
                 
-                st.success(f"Report generated successfully: `{case_id}`")
+                st.success(f"Report generated successfully for: `{case_id_input}`")
                 
                 col1, col2 = st.columns(2)
                 with col1:
                     st.download_button(
                         label="Download HTML Report",
                         data=html_data,
-                        file_name=f"{case_id}_Custody_Report.html",
+                        file_name=f"{case_id_input}_Custody_Report.html",
                         mime="text/html"
                     )
                 with col2:
@@ -399,15 +400,14 @@ def reports_page() -> None:
                         st.download_button(
                             label="Download PDF Report",
                             data=pdf_data,
-                            file_name=f"{case_id}_Custody_Report.pdf",
+                            file_name=f"{case_id_input}_Custody_Report.pdf",
                             mime="application/pdf"
                         )
                     else:
-                        st.warning("PDF export unavailable (WeasyPrint missing). Download HTML instead.")
+                        st.warning("PDF export unavailable. Run `pip install xhtml2pdf`.")
                         
             except Exception as exc:
-                st.error(f"Failed to generate report: {exc}")   
-
+                st.error(f"Failed to generate report: {exc}")
 
 def main() -> None:
     st.set_page_config(page_title="Stamped", layout="wide")

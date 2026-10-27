@@ -6,7 +6,7 @@ streamlit==1.65.0
 
 # --- Report generation (Kea: reports) ---
 jinja2==3.1.6
-weasyprint==70.0        # HTML -> PDF export for the custody report
+xhtml2pdf==0.2.1        # HTML -> PDF export for the custody report
 
 # --- Capture / webhook listener (Amir: capture) ---
 flask==3.1.3
