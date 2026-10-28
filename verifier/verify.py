@@ -16,6 +16,11 @@ It performs three checks and prints one overall result:
   3. ANCHOR           each anchor must be correctly numbered and linked to the
      CONSISTENCY      previous one, and must match the live log: the entry it
                       names must still exist with the hash that was anchored.
+  4. RE-SEALS         (only when the log contains them) every "resealed" entry
+                      wraps a range of earlier entries in a checkpoint signed
+                      with a newer suite (Ed448 AND ML-DSA-87). The range must
+                      still match the live log exactly and both signatures must
+                      verify. Original entries are never altered by a re-seal.
 
 Overall result and exit code:
   PASS  (0)  every check passed
@@ -26,7 +31,7 @@ Overall result and exit code:
 WHY THIS FILE REPEATS LOGIC THAT ALSO EXISTS IN seal/ AND verifier/anchor_check.py
   The verifier must not share a bug with the thing it verifies. The hashing and
   signature rules below are deliberately re-implemented from the written format
-  (docs/custody-log-format.md, docs/anchoring.md), not imported. This module
+  (docs/custody-log-format.md, docs/anchoring.md, docs/reseal.md), not imported. This module
   imports only `cryptography`, `oqs` (liboqs) and the Python standard library.
   Do not "fix the duplication" by importing from seal/, ingest/ or the app.
 
@@ -49,6 +54,7 @@ from pathlib import Path
 try:
     from cryptography.exceptions import InvalidSignature
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+    from cryptography.hazmat.primitives.asymmetric.ed448 import Ed448PublicKey
 except ImportError as _exc:  # report clearly instead of a traceback; exit code 2 = ERROR
     sys.stderr.write(
         "ERROR: the 'cryptography' package is required to verify signatures "
@@ -67,6 +73,19 @@ PUB_MANIFEST_FILE = "public_keys.json"
 DEFAULT_DB_NAME = "stamped.db"
 
 PASS, FAIL, ERROR, SKIPPED = "PASS", "FAIL", "ERROR", "SKIPPED"
+
+# Re-seals (Issue #10). See docs/reseal.md.
+RESEAL_FORMAT = "stamped-reseal/1"
+RESEAL_KEY_FORMAT = "stamped-reseal-key/1"
+RESEAL_ACTION = "resealed"
+RESEAL_KEY_DIR = "reseal"
+ED448_ALG = "Ed448"
+MLDSA87_ALG = "ML-DSA-87"
+RESEAL_PAYLOAD_TYPES = {
+    "format": str, "case_id": str, "seq": int, "resealed_at": str, "from_entry_id": int,
+    "to_entry_id": int, "entry_count": int, "first_entry_prev_hash": str, "last_entry_hash": str,
+    "range_digest": str, "key_id": str,
+}
 
 REQUIRED_PAYLOAD_TYPES = {
     "format": str, "case_id": str, "seq": int, "anchored_at": str,
@@ -150,7 +169,7 @@ def read_public_keys(public_dir: Path) -> dict:
     }
 
 
-def load_oqs():
+def load_oqs(alg: str = MLDSA_ALG):
     """Import liboqs and prove it really works before trusting any answer from it.
 
     A broken or half-built liboqs must produce ERROR, not a wall of 'invalid
@@ -164,18 +183,18 @@ def load_oqs():
         ) from exc
     try:
         msg = b"stamped-verifier-self-test"
-        with oqs.Signature(MLDSA_ALG) as signer:
+        with oqs.Signature(alg) as signer:
             pub = signer.generate_keypair()
             sig = signer.sign(msg)
-        with oqs.Signature(MLDSA_ALG) as verifier:
+        with oqs.Signature(alg) as verifier:
             good = bool(verifier.verify(msg, sig, pub))
             bad = bool(verifier.verify(msg + b"x", sig, pub))
     except Exception as exc:  # noqa: BLE001
         raise VerifierError(
-            f"liboqs is installed but {MLDSA_ALG} did not work ({type(exc).__name__}). Refusing to report a result."
+            f"liboqs is installed but {alg} did not work ({type(exc).__name__}). Refusing to report a result."
         ) from exc
     if not good or bad:
-        raise VerifierError(f"The liboqs {MLDSA_ALG} self-test gave wrong answers. Refusing to report a result.")
+        raise VerifierError(f"The liboqs {alg} self-test gave wrong answers. Refusing to report a result.")
     return oqs
 
 
@@ -187,12 +206,20 @@ def verify_ed25519(msg: bytes, sig: bytes, pub: bytes) -> bool:
         return False  # a malformed signature or key means "invalid", never a crash
 
 
-def verify_mldsa(oqs, msg: bytes, sig: bytes, pub: bytes) -> bool:
+def verify_mldsa(oqs, msg: bytes, sig: bytes, pub: bytes, alg: str = MLDSA_ALG) -> bool:
     try:
-        with oqs.Signature(MLDSA_ALG) as verifier:
+        with oqs.Signature(alg) as verifier:
             return bool(verifier.verify(msg, sig, pub))
     except Exception:  # noqa: BLE001  any failure here means "does not verify"
         return False
+
+
+def verify_ed448(msg: bytes, sig: bytes, pub: bytes) -> bool:
+    try:
+        Ed448PublicKey.from_public_bytes(pub).verify(sig, msg)
+        return True
+    except (InvalidSignature, ValueError, TypeError):
+        return False  # a malformed signature or key means "invalid", never a crash
 
 
 # ---------------------------------------------------------------------------
@@ -459,11 +486,184 @@ def check_anchors(rows: list[tuple], anchor_dir: Path, keys: dict, *, allow_no_a
 
 
 # ---------------------------------------------------------------------------
+# Check 4: re-seals (Issue #10)
+# ---------------------------------------------------------------------------
+def range_digest(entry_hashes: list[str]) -> str:
+    """SHA-256 of the canonical JSON list of a range's entry hashes, in entry_id order."""
+    return hashlib.sha256(canonical(list(entry_hashes)).encode("utf-8")).hexdigest()
+
+
+def read_reseal_keys(public_dir: Path) -> dict:
+    """Read public/reseal/*.json. Returns {key_id: record}. A record is either usable
+    (ed448, mldsa87, case_id) or marked bad with a reason; a file that does not match
+    its own key id is evidence of alteration, so it is kept and reported, not skipped."""
+    folder = public_dir / RESEAL_KEY_DIR
+    keys: dict[str, dict] = {}
+    if not folder.is_dir():
+        return keys
+    try:
+        files = sorted(folder.glob("*.json"))
+    except OSError as exc:
+        raise VerifierError(f"Could not list {_safe(folder)}: {type(exc).__name__}") from exc
+    for path in files:
+        claimed = path.stem
+        try:
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if record.get("format") != RESEAL_KEY_FORMAT:
+                raise ValueError("unknown or missing format")
+            if record["classical"]["algorithm"] != ED448_ALG or record["post_quantum"]["algorithm"] != MLDSA87_ALG:
+                raise ValueError("unexpected algorithms")
+            ed_pub = base64.b64decode(record["classical"]["public_key_b64"], validate=True)
+            pq_pub = base64.b64decode(record["post_quantum"]["public_key_b64"], validate=True)
+            case_id = record["case_id"]
+            if not isinstance(case_id, str) or not ed_pub or not pq_pub:
+                raise ValueError("incomplete key record")
+            fingerprint = hashlib.sha256(ed_pub + pq_pub).hexdigest()[:32]
+        except Exception as exc:  # noqa: BLE001  any unreadable key file is reported against that key id
+            keys[claimed] = {"ok": False, "reason": f"{_safe(path.name)} is unreadable or malformed ({type(exc).__name__})"}
+            continue
+        if fingerprint != claimed or record.get("key_id") != claimed:
+            keys[claimed] = {"ok": False, "reason": f"{_safe(path.name)} does not match its own key id: the key file was altered"}
+        else:
+            keys[claimed] = {"ok": True, "ed448": ed_pub, "mldsa87": pq_pub, "case_id": case_id}
+    return keys
+
+
+def _parse_reseal(details: str) -> dict:
+    """Read and validate one re-seal entry's details. Raises ValueError with a short reason."""
+    try:
+        d = json.loads(details)
+        payload, sigs, claimed_hash = d["payload"], d["signatures"], d["payload_hash"]
+        if d.get("format") != RESEAL_FORMAT:
+            raise ValueError("unknown or missing format")
+        for key, typ in RESEAL_PAYLOAD_TYPES.items():
+            value = payload[key]
+            if not isinstance(value, typ) or isinstance(value, bool):
+                raise ValueError(f"payload field '{key}' has the wrong type")
+        if payload["format"] != RESEAL_FORMAT:
+            raise ValueError("payload has the wrong format")
+        if not isinstance(claimed_hash, str):
+            raise ValueError("payload_hash is not text")
+        sig_ed = base64.b64decode(sigs["ed448"], validate=True)
+        sig_pq = base64.b64decode(sigs["ml_dsa_87"], validate=True)
+        message = canonical(payload).encode("utf-8")
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001  KeyError, TypeError, AttributeError, binascii.Error ...
+        raise ValueError(type(exc).__name__) from exc
+    return {"payload": payload, "claimed_hash": claimed_hash, "sig_ed": sig_ed, "sig_pq": sig_pq, "message": message}
+
+
+def check_reseals(rows: list[tuple], public_dir: Path) -> dict:
+    """Check every 'resealed' entry. SKIPPED when the log has none.
+
+    FAIL  = the record disagrees with the log or its signature is wrong (tampering).
+    ERROR = it could not be checked (renewal keys not supplied, liboqs missing): never a pass.
+    """
+    resealed = [r for r in rows if r[4] == RESEAL_ACTION]
+    result = {"status": SKIPPED, "segments": [], "failures": [], "errors": []}
+    if not resealed:
+        return result
+    failures, errors, segments = result["failures"], result["errors"], result["segments"]
+    keys = read_reseal_keys(public_dir)
+    oqs = None
+    oqs_error = None
+    by_id = {r[0]: r for r in rows}
+    expected_seq = 1
+
+    for row in resealed:
+        entry_id, details, entry_hash_value = row[0], row[7], row[9]
+        info = {"entry_id": entry_id, "seq": None, "from_entry_id": None, "to_entry_id": None, "entry_count": None,
+                "key_id": None, "range_matches": None, "ed448": None, "ml_dsa_87": None}
+        segments.append(info)
+
+        def fail(code, message, **extra):
+            failures.append({"code": code, "message": f"Re-seal entry #{entry_id}: {message}", "entry_id": entry_id, **extra})
+
+        def error(code, message):
+            errors.append({"code": code, "message": f"Re-seal entry #{entry_id}: {message}", "entry_id": entry_id})
+
+        try:
+            parsed = _parse_reseal(details)
+        except ValueError as exc:
+            fail("reseal_malformed", f"its record is unreadable or malformed ({_safe(exc)}); it was not written by the application.")
+            continue
+        payload, message = parsed["payload"], parsed["message"]
+        lo, hi = payload["from_entry_id"], payload["to_entry_id"]
+        info.update(seq=payload["seq"], from_entry_id=lo, to_entry_id=hi, entry_count=payload["entry_count"],
+                    key_id=payload["key_id"])
+
+        if hashlib.sha256(message).hexdigest() != parsed["claimed_hash"]:
+            fail("reseal_hash_mismatch", "the stored payload_hash does not match the signed payload.")
+        if payload["seq"] != expected_seq:
+            fail("reseal_sequence", f"it is numbered {payload['seq']} but should be {expected_seq}; a re-seal may have been removed.")
+        expected_seq += 1
+
+        # -- the range it claims to wrap must still be exactly what is in the log -------------
+        if not (lo <= hi < entry_id):
+            info["range_matches"] = False
+            fail("reseal_range_invalid", f"it claims entries #{lo} to #{hi}, which is not a range of earlier entries.")
+        else:
+            segment = [r for r in rows if lo <= r[0] <= hi]
+            problems = []
+            if not segment or segment[0][0] != lo or segment[-1][0] != hi:
+                problems.append("the first or last entry of the range is missing")
+            else:
+                if len(segment) != payload["entry_count"]:
+                    problems.append(f"{payload['entry_count']} entries were wrapped but {len(segment)} are there now")
+                if segment[0][8] != payload["first_entry_prev_hash"]:
+                    problems.append(f"entry #{lo} no longer links to the entry before it as it did")
+                if segment[-1][9] != payload["last_entry_hash"]:
+                    problems.append(f"entry #{hi} no longer has the hash that was wrapped")
+                if range_digest([r[9] for r in segment]) != payload["range_digest"]:
+                    problems.append("the wrapped entries no longer produce the signed digest")
+            info["range_matches"] = not problems
+            if problems:
+                fail("reseal_range_mismatch",
+                     f"entries #{lo} to #{hi} do not match what was re-sealed: {'; '.join(problems)}. "
+                     "History inside that range was rewritten or removed.", suspect_range=[lo, hi])
+
+        # -- the signatures ---------------------------------------------------------------------
+        key = keys.get(payload["key_id"])
+        if key is None:
+            error("reseal_key_missing", f"the renewal public key '{_safe(payload['key_id'])}' was not found in "
+                                        f"{RESEAL_KEY_DIR}/ inside the public key folder, so the re-seal signatures cannot be checked.")
+            continue
+        if not key["ok"]:
+            fail("reseal_key_altered", key["reason"] + ".")
+            continue
+        if key["case_id"] != payload["case_id"]:
+            fail("reseal_case_mismatch", f"the renewal keys belong to case '{_safe(key['case_id'])}' "
+                                         f"but the re-seal is for case '{_safe(payload['case_id'])}'.")
+        if oqs is None and oqs_error is None:
+            try:
+                oqs = load_oqs(MLDSA87_ALG)
+            except VerifierError as exc:
+                oqs_error = str(exc)
+        if oqs is None:
+            error("liboqs_unavailable", oqs_error)
+            continue
+        ed_ok = verify_ed448(message, parsed["sig_ed"], key["ed448"])
+        pq_ok = verify_mldsa(oqs, message, parsed["sig_pq"], key["mldsa87"], alg=MLDSA87_ALG)
+        info["ed448"], info["ml_dsa_87"] = ed_ok, pq_ok
+        if not (ed_ok and pq_ok):
+            which = [n for n, ok in ((ED448_ALG, ed_ok), (MLDSA87_ALG, pq_ok)) if not ok]
+            fail("reseal_signature_invalid", f"signature check failed for {' and '.join(which)}. Both must verify "
+                                             "(the record was altered, or these are not the keys that signed it).")
+
+    result["status"] = FAIL if failures else (ERROR if errors else PASS)
+    return result
+
+
+# ---------------------------------------------------------------------------
 # Putting it together
 # ---------------------------------------------------------------------------
-def decide(chain_status: str, sig_status: str, con_status: str, limited: bool) -> str:
-    """PASS only when every check explicitly says PASS. Anything unexpected is ERROR."""
+def decide(chain_status: str, sig_status: str, con_status: str, limited: bool, reseal_status: str = SKIPPED) -> str:
+    """PASS only when every check explicitly says PASS. Anything unexpected is ERROR.
+    The re-seal check counts only when the log contains re-seals (otherwise it is SKIPPED)."""
     statuses = (chain_status, sig_status, con_status)
+    if reseal_status != SKIPPED:
+        statuses += (reseal_status,)
     if FAIL in statuses:
         return FAIL
     if all(s == PASS for s in statuses):
@@ -521,9 +721,18 @@ def verify_case(db_path: Path, anchor_dir: Path, public_dir: Path, *, allow_no_a
                "consistency": {"status": ERROR, "failures": []}, "anchors": [], "warnings": [], "limited": False,
                "case_id": None, "latest_anchor": None, "unanchored_entries": 0, "unanchored_real_entries": 0}
 
-    overall = decide(chain["status"], anc["signatures"]["status"], anc["consistency"]["status"], anc["limited"])
+    try:
+        reseals = check_reseals(rows, public_dir)
+    except VerifierError:
+        raise
+    except Exception as exc:  # noqa: BLE001  a crashed check is an ERROR, never a pass
+        reseals = {"status": ERROR, "segments": [], "failures": [],
+                   "errors": [{"code": "internal_error", "message": f"The re-seal check crashed ({type(exc).__name__}: {_safe(exc)})."}]}
+
+    overall = decide(chain["status"], anc["signatures"]["status"], anc["consistency"]["status"], anc["limited"],
+                     reseals["status"])
     suspect = [f["suspect_range"] for f in anc["consistency"]["failures"] if "suspect_range" in f]
-    return {
+    report = {
         "tool": TOOL, "overall": overall, "limited": anc["limited"], "case_id": anc["case_id"],
         "broken_entry_id": chain["first_bad_entry"], "suspect_range": suspect[0] if suspect else None,
         "checks": {"chain": chain, "signatures": anc["signatures"], "anchors": anc["consistency"]},
@@ -532,6 +741,9 @@ def verify_case(db_path: Path, anchor_dir: Path, public_dir: Path, *, allow_no_a
         "warnings": anc["warnings"],
         "keys": {"ed25519_sha256": keys["ed25519_sha256"], "mldsa65_sha256": keys["mldsa_sha256"]},
     }
+    if reseals["status"] != SKIPPED:
+        report["reseals"] = reseals  # only present when the log holds re-seals, so reports for other logs are unchanged
+    return report
 
 
 # ---------------------------------------------------------------------------
@@ -590,6 +802,14 @@ def render_report(report: dict, paths: dict) -> str:
     else:
         con_text = "see details below"
     out.append(f"  [3] Consistency with anchors .......... {cons['status']:<7} {con_text}")
+    res = report.get("reseals") or {"status": SKIPPED, "segments": [], "failures": [], "errors": []}
+    if res["status"] != SKIPPED:
+        n = len(res["segments"])
+        if res["status"] == PASS:
+            res_text = (f"{n} re-seal(s): ranges match the log; Ed448 AND {MLDSA87_ALG} signatures valid")
+        else:
+            res_text = "see details below"
+        out.append(f"  [4] Re-sealed segments ................ {res['status']:<7} {res_text}")
 
     if report["anchors"]:
         out += ["", "ANCHORS (oldest first)"]
@@ -601,6 +821,18 @@ def render_report(report: dict, paths: dict) -> str:
             out.append(f"  #{a['seq']:<3} entry #{a['head_entry_id']:<5} Ed25519 {_mark(a['ed25519']):<11} "
                        f"{MLDSA_ALG} {_mark(a['ml_dsa_65']):<11} log {log_text}")
 
+    if res["segments"]:
+        out += ["", "RE-SEALS (oldest first; each wraps earlier entries, none rewrites them)"]
+        for g in res["segments"]:
+            if g["from_entry_id"] is None:
+                out.append(f"  entry #{g['entry_id']:<5} UNREADABLE")
+                continue
+            range_text = "matches" if g["range_matches"] else "DOES NOT MATCH"
+            out.append(f"  entry #{g['entry_id']:<5} covers #{g['from_entry_id']}-#{g['to_entry_id']} ({g['entry_count']} entries)  "
+                       f"Ed448 {_mark(g['ed448']):<11} {MLDSA87_ALG} {_mark(g['ml_dsa_87']):<11} log {range_text}  "
+                       f"key {_safe(g['key_id'])}")
+        out.append("  (compare each key id with a copy you obtained separately from this package)")
+
     details = []
     if chain["status"] in (FAIL, ERROR):
         details.append(f"  {chain['status']} [chain:{chain['reason']}] {chain['detail']}")
@@ -610,6 +842,10 @@ def render_report(report: dict, paths: dict) -> str:
     for f in cons["failures"]:
         label = "ERROR" if f["code"] == "internal_error" else "FAIL"
         details.append(f"  {label} [{f['code']}] {f['message']}")
+    for f in res["failures"]:
+        details.append(f"  FAIL [{f['code']}] {f['message']}")
+    for f in res["errors"]:
+        details.append(f"  ERROR [{f['code']}] {f['message']}")
     if details:
         out += ["", "DETAILS"] + details
 
@@ -632,6 +868,10 @@ def render_report(report: dict, paths: dict) -> str:
                 "  anchor file was deleted, and it is only as strong as (a) where the anchors were stored and",
                 "  (b) whether the public keys above are the real ones. Custody entries are not individually",
                 "  signed; the signed checkpoints are the anchors."]
+        if res["status"] == PASS:
+            out += ["  Re-seals add a newer-algorithm signature over earlier entries; the original entries and",
+                    "  anchors were not changed to make them. A re-seal is only as strong as the storage and the",
+                    "  renewal key ids above, exactly like an anchor."]
     else:
         out += ["  Do not rely on this log until the reported problem is explained."]
     return "\n".join(out)

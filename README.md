@@ -153,6 +153,16 @@ The verifier is standalone and has no dependency on the running app — it's mea
 python verifier/verify.py --case-export <path-to-exported-case>
 ```
 
+### Re-seal old evidence (Tier 3 stretch)
+
+Re-sealing wraps an old stretch of the custody log in a new checkpoint signed with a newer suite (Ed448 + ML-DSA-87) without rewriting any original entry. The verifier checks it automatically when a case contains one. Format and limits: [docs/reseal.md](docs/reseal.md).
+
+```bash
+python -m seal.reseal create-keys --case <case-id>
+python -m seal.reseal reseal --db data/stamped.db --case <case-id> --from 1
+python scripts/reseal_demo.py --tamper   # show an old record, re-seal it, verify, then see a forgery rejected
+```
+
 The Verification page's `demo: simulate tampering` button builds a synthetic, disposable case in a temporary directory, alters only that case copy, and invokes this verifier in chain-only mode. It does not read or modify the live case database. Signatures and external anchors are not tested by this demo. The automated end-to-end test repeats the flow three times; the team must still rehearse it live before the pitch.
 
 ## Core demo
