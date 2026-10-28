@@ -1,15 +1,34 @@
-# Stamped colour theme. The colours come from what the product is:
-#   ink navy      (#1B2A41)  notary / court ink: trust, authority, primary buttons
-#   parchment     (#F7F3E8)  paper evidence is printed on: page background
-#   brass seal    (#8A6420)  the seal / stamp: accent rules (set in app/theme.py)
-# Red, green and amber are NOT used here. They are reserved for FAIL, PASS and
-# ERROR results (app/theme.py) so a brand colour can never be mistaken for a verdict.
-# Every text/background pair below passes WCAG AA (4.5:1).
+# Stamped colour theme: a three-step teal family (#092327, #0B5351, #00A9A5) on parchment, with a matching
+# dark mode. The colours are defined in app/theme.py (PALETTE); tests/test_theme.py keeps this file in step.
+#
+#   light:  deep teal text (#092327), ink-teal buttons (#0B5351), parchment page (#F7F3E8)
+#   dark:   parchment text (#F7F3E8), mid-teal buttons (#05827F, a shade between #0B5351 and #00A9A5 so white
+#           button text stays readable), deep-teal page (#092327), ink-teal panels (#0B5351)
+#
+# Red, green and amber are NOT used here. They are reserved for FAIL, PASS and ERROR results (app/theme.py)
+# so a brand colour can never be mistaken for a verdict. Every text/background pair passes WCAG AA (4.5:1).
+#
+# Because both a light and a dark variant are defined, each person can switch between them in the app's
+# menu (it opens in whichever their device prefers).
+
+[client]
+# "minimal" keeps the menu to the light/dark switch only: no "Record screen", Print or developer options.
+toolbarMode = "minimal"
+
+[browser]
+gatherUsageStats = false
 
 [theme]
-base = "light"
-primaryColor = "#1B2A41"
+font = "sans serif"
+
+[theme.light]
+primaryColor = "#0B5351"
 backgroundColor = "#F7F3E8"
 secondaryBackgroundColor = "#EBE4D2"
-textColor = "#1F2933"
-font = "sans serif"
+textColor = "#092327"
+
+[theme.dark]
+primaryColor = "#05827F"
+backgroundColor = "#092327"
+secondaryBackgroundColor = "#0B5351"
+textColor = "#F7F3E8"

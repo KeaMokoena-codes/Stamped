@@ -18,24 +18,30 @@ from access import (
     Resource,
     Role,
     can,
+    can_open_page,
     connect_database,
     export_custody_log,
     export_findings,
     export_timeline_from_db,
     get_custody_log,
+    get_directory,
     get_evidence,
     get_findings,
     get_timeline_from_db,
+    resolve_display_name,
     resolve_role,
 )
 from app.plain_language import (
     CUSTODY_COLUMNS,
+    EMPTY_DIRECTORY,
     EVIDENCE_COLUMNS,
     FINDINGS_COLUMNS,
     GLOSSARY,
+    Directory,
     demo_expectation,
     friendly_error,
     plain_rows,
+    provenance_lines,
     role_label,
     signin_error,
     summarise_verification,
@@ -54,6 +60,27 @@ def _load_pseudonymizer() -> Pseudonymizer | None:
     if not key_path.is_file():
         return None
     return Pseudonymizer.from_key_file(key_path)
+
+
+def _load_directory(connection, role: Role, actor: str, pseudonymizer) -> Directory:
+    """Names for the screen (display names, file names, finding titles), already restricted for this role.
+
+    A name is a convenience: if it cannot be looked up, the page shows the stored ids instead of failing.
+    The page's own read still raises its own, properly explained, error if something is really wrong."""
+    try:
+        return Directory.from_rows(get_directory(connection, role, actor, pseudonymizer=pseudonymizer))
+    except Exception as exc:  # noqa: BLE001 - falls back to ids; the page's own read reports real problems
+        LOGGER.warning("Names could not be looked up (%s): %s", type(exc).__name__, exc)
+        return EMPTY_DIRECTORY
+
+
+def _signed_in_name(actor: str) -> str:
+    try:
+        with connect_database() as connection:
+            return resolve_display_name(connection, actor)
+    except Exception as exc:  # noqa: BLE001 - the user id is always a safe thing to show
+        LOGGER.warning("Display name could not be looked up (%s): %s", type(exc).__name__, exc)
+        return actor
 
 
 def _identity() -> tuple[str, Role] | None:
@@ -102,17 +129,27 @@ def _login_sidebar() -> tuple[str, Role] | None:
         return None
 
     actor, role = identity
-    st.sidebar.caption(f"Signed in: {actor} ({role_label(role)})")
+    st.sidebar.caption(
+        f"Signed in: {_signed_in_name(actor)} ({role_label(role)})",
+        help=f"User ID: {actor}",
+    )
     if st.sidebar.button("Sign out", key="stamped_sign_out"):
         st.session_state.pop("stamped_actor", None)
         st.rerun()
     return identity
 
 
-def _page_identity() -> tuple[str, Role] | None:
+def _page_identity(page: str) -> tuple[str, Role] | None:
+    """The signed-in user, or None (with a plain explanation) if nobody is signed in or this role does not
+    use this page. Navigation already hides pages a role does not need; this check also stops a page that is
+    opened directly by its address."""
     identity = _identity()
     if identity is None:
         st.info("Please sign in using the panel on the left to see this page.")
+        return None
+    if not can_open_page(identity[1], page):
+        st.info("Your role does not use this page. The pages in the menu on the left are the ones you can open.")
+        return None
     return identity
 
 
@@ -132,24 +169,26 @@ def _show_records(
         rows: list[dict],
         empty_message: str,
         columns: tuple[tuple[str, str], ...] | None = None,
+        directory: Directory | None = None,
 ) -> None:
     """Plain table first; the complete stored record stays one click away.
 
     Both tables are built from the same rows the access layer returned for this role,
-    so nothing is added, and nothing a role may not see can appear.
+    so nothing is added, and nothing a role may not see can appear. Names replace ids in the
+    plain table only; the technical details below it show every stored id unchanged.
     """
     st.subheader(title)
     if not rows:
         st.info(empty_message)
         return
-    plain = plain_rows(rows, columns) if columns else None
+    plain = plain_rows(rows, columns, directory) if columns else None
     if plain is None:
         st.dataframe(rows, width="stretch")
         return
     st.dataframe(plain, width="stretch")
     with st.expander("Technical details: the full record"):
         st.caption(
-            "Every stored field, including fingerprints, identifiers and raw data, "
+            "Every stored field, including fingerprints, user and evidence IDs and raw data, "
             "exactly as recorded."
         )
         st.dataframe(rows, width="stretch")
@@ -158,7 +197,7 @@ def _show_records(
 def case_overview() -> None:
     st.header("Case overview")
     st.caption("A summary of the evidence and findings your role is allowed to see.")
-    identity = _page_identity()
+    identity = _page_identity("case_overview")
     if identity is None:
         return
     actor, role = identity
@@ -166,6 +205,7 @@ def case_overview() -> None:
     try:
         pseudonymizer = _load_pseudonymizer()
         with connect_database() as connection:
+            directory = _load_directory(connection, role, actor, pseudonymizer)
             evidence = get_evidence(connection, role, actor, pseudonymizer=pseudonymizer)
             findings = get_findings(connection, role, actor, pseudonymizer=pseudonymizer)
             custody = (
@@ -188,6 +228,7 @@ def case_overview() -> None:
             evidence,
             "No evidence items are recorded in the shared database yet.",
             EVIDENCE_COLUMNS,
+            directory,
         )
         _show_records(
             "Analysis findings", findings, "No findings are recorded yet.", FINDINGS_COLUMNS
@@ -233,6 +274,7 @@ def case_overview() -> None:
             evidence,
             "No evidence items are recorded in the shared database yet.",
             EVIDENCE_COLUMNS,
+            directory,
         )
     else:
         st.subheader("Prosecution case brief")
@@ -256,12 +298,14 @@ def case_overview() -> None:
             evidence,
             "No evidence items are recorded in the shared database yet.",
             EVIDENCE_COLUMNS,
+            directory,
         )
         _show_records(
             "Chain of custody",
             custody,
             "The shared custody log is empty.",
             CUSTODY_COLUMNS,
+            directory,
         )
 
 
@@ -271,7 +315,7 @@ def timeline_page() -> None:
         "What happened, in time order. Entries marked Finding are suspicious activity the "
         "system flagged; open any entry to see where it came from."
     )
-    identity = _page_identity()
+    identity = _page_identity("timeline")
     if identity is None:
         return
     actor, role = identity
@@ -279,6 +323,7 @@ def timeline_page() -> None:
     try:
         pseudonymizer = _load_pseudonymizer()
         with connect_database() as connection:
+            directory = _load_directory(connection, role, actor, pseudonymizer)
             entries = get_timeline_from_db(
                 connection, role, actor, pseudonymizer=pseudonymizer
             )
@@ -308,6 +353,9 @@ def timeline_page() -> None:
                         f"{entry.get('outcome', 'unknown')}"
                     )
                 st.markdown("**Where this record came from**")
+                for line in provenance_lines(entry.get("provenance"), directory):
+                    st.text(line)
+                st.caption("Stored identifiers for this record:")
                 st.json(entry.get("provenance", {}))
                 st.markdown("**Technical details**")
                 st.json(entry.get("details", {}))
@@ -321,7 +369,7 @@ def findings_page() -> None:
         "Suspicious activity the system flagged, and how serious it is. "
         "Critical and High findings need attention first."
     )
-    identity = _page_identity()
+    identity = _page_identity("findings")
     if identity is None:
         return
     actor, role = identity
@@ -329,6 +377,7 @@ def findings_page() -> None:
     try:
         pseudonymizer = _load_pseudonymizer()
         with connect_database() as connection:
+            directory = _load_directory(connection, role, actor, pseudonymizer)
             findings = get_findings(connection, role, actor, pseudonymizer=pseudonymizer)
     except (AccessError, DatabaseError, OSError, ValueError) as exc:
         _load_error(exc)
@@ -339,6 +388,7 @@ def findings_page() -> None:
         findings,
         "No findings are recorded in the shared database yet.",
         FINDINGS_COLUMNS,
+        directory,
     )
 
 
@@ -348,7 +398,7 @@ def custody_history_page() -> None:
         "Who handled the evidence, what they did and when. Opening evidence, findings or the "
         "timeline is recorded here too."
     )
-    identity = _page_identity()
+    identity = _page_identity("custody_history")
     if identity is None:
         return
     actor, role = identity
@@ -356,6 +406,7 @@ def custody_history_page() -> None:
     try:
         pseudonymizer = _load_pseudonymizer()
         with connect_database() as connection:
+            directory = _load_directory(connection, role, actor, pseudonymizer)
             entries = get_custody_log(connection, role, actor, pseudonymizer=pseudonymizer)
     except (AccessError, DatabaseError, OSError, ValueError) as exc:
         _load_error(exc)
@@ -366,6 +417,7 @@ def custody_history_page() -> None:
         entries,
         "The shared custody log is empty.",
         CUSTODY_COLUMNS,
+        directory,
     )
 
 
@@ -375,7 +427,7 @@ def verification_page() -> None:
         "Checks that a case record has not been changed since it was sealed, and tells you "
         "in plain words whether you can rely on it."
     )
-    if _page_identity() is None:
+    if _page_identity("verification") is None:
         return
 
     st.info(
@@ -501,7 +553,7 @@ def reports_page() -> None:
     st.caption(
         "Download a copy of what you are allowed to see, to keep or hand to someone else."
     )
-    identity = _page_identity()
+    identity = _page_identity("reports")
     if identity is None:
         return
     actor, role = identity
@@ -595,27 +647,17 @@ def main() -> None:
     st.title("Stamped")
     st.caption("Court-ready digital evidence that stays trustworthy for 30 years.")
     st.sidebar.header("Sign in")
-    st.sidebar.caption(
-        "Enter the user ID you were given. This is a demonstration sign-in: it checks your "
-        "ID but does not use a password. Your role decides what you can see."
-    )
+    st.sidebar.caption("Enter the user ID you were given.")
 
     identity = _login_sidebar()
+    if identity is None:
+        # Nothing about the system, its set-up or its contents is shown until someone has signed in.
+        st.info("Welcome. Sign in with your user ID in the panel on the left to open your case.")
+        return
+    _, role = identity
     with st.sidebar.expander("What do these terms mean?"):
         for term, meaning in GLOSSARY:
             st.markdown(f"**{term}**  \n{meaning}")
-    if identity is None:
-        st.info(
-            "Welcome. Sign in with your user ID in the panel on the left to open your case. "
-            "If you do not have a user ID, ask your administrator."
-        )
-        with st.expander("First-time setup (for administrators)"):
-            st.markdown(
-                "Initialize the shared database with `python schemas/init_db.py` and add an "
-                "active user before signing in. No sample case data is generated by the app."
-            )
-        return
-    _, role = identity
 
     workspace_names = {
         Role.EXAMINER: "Forensic analysis workspace",
@@ -623,13 +665,18 @@ def main() -> None:
         Role.PROSECUTOR: "Prosecution case brief",
     }
     st.sidebar.subheader(workspace_names[role])
+    # Only the pages this role needs are offered (the table is in access/roles.py).
     pages = [
-        st.Page(case_overview, title="Case overview", default=True),
-        st.Page(timeline_page, title="Timeline"),
-        st.Page(findings_page, title="Findings"),
-        st.Page(custody_history_page, title="Custody history"),
-        st.Page(verification_page, title="Verification"),
-        st.Page(reports_page, title="Reports"),
+        st.Page(function, title=title, default=(key == "case_overview"))
+        for key, function, title in (
+            ("case_overview", case_overview, "Case overview"),
+            ("timeline", timeline_page, "Timeline"),
+            ("findings", findings_page, "Findings"),
+            ("custody_history", custody_history_page, "Custody history"),
+            ("verification", verification_page, "Verification"),
+            ("reports", reports_page, "Reports"),
+        )
+        if can_open_page(role, key)
     ]
     navigation = st.navigation(pages, position="sidebar")
     previous_role = st.session_state.get("stamped_navigation_role")

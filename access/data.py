@@ -35,7 +35,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from access.masking import Pseudonymizer, project_records, role_pseudonymizes
-from access.roles import (CUSTODY_FIELDS, EVIDENCE_FIELDS, FINDING_FIELDS, AccessDenied, AccessError, Action,
+from access.roles import (CUSTODY_FIELDS, EVIDENCE_FIELDS, FINDING_FIELDS, USER_FIELDS, AccessDenied, AccessError, Action,
                           Resource, Role, UnknownRoleError, can, parse_role, timeline_spec)
 from detect.canon import canonical_hash
 from ingest.parsers.auth_log import TOOL_NAME as AUTH_LOG_TOOL, TOOL_VERSION as AUTH_LOG_VERSION
@@ -321,6 +321,25 @@ def _build_persisted_timeline(conn, role: Role, pz, *, evidence_id=None, **_):
     )
 
 
+def _build_directory(conn, role: Role, pz, **_):
+    """Names for the screen: who a user is, what an evidence item is called, what a finding says.
+
+    Built from the SAME projected rows the evidence and findings views return, so a role never gets a
+    name it could not already read there (a prosecutor gets no `original_name`; finding titles arrive with
+    identifiers already masked). Nothing here is stored, hashed or written into a custody entry."""
+    users = project_records(_rows(conn, "users", ["user_id", "display_name", "role"], "", (), "user_id"),
+                            USER_FIELDS, role, pz)
+    rows = [{"kind": "user", **{k: u[k] for k in ("user_id", "display_name", "role") if k in u}} for u in users]
+    if can(role, Resource.EVIDENCE, Action.VIEW):
+        for e in _build_evidence(conn, role, pz)[0]:
+            rows.append({"kind": "evidence",
+                         **{k: e[k] for k in ("evidence_id", "original_name", "captured_at", "sealed_at") if k in e}})
+    if can(role, Resource.FINDINGS, Action.VIEW):
+        for f in _build_findings(conn, role, pz)[0]:
+            rows.append({"kind": "finding", **{k: f[k] for k in ("finding_id", "severity", "title") if k in f}})
+    return rows, {}
+
+
 def _build_custody(conn, role: Role, pz, *, evidence_id=None, **_):
     cols = _visible_columns(_CUSTODY_COLUMNS, CUSTODY_FIELDS, role, always=("details_json",))
     where, params = (" WHERE evidence_id = ?", (evidence_id,)) if evidence_id else ("", ())
@@ -404,6 +423,22 @@ def get_timeline_from_db(conn, role, actor, *, evidence_id=None,
         pseudonymizer,
         evidence_id=evidence_id,
     )
+
+
+def get_directory(conn, role, actor, *, pseudonymizer: Pseudonymizer | None = None) -> list[dict]:
+    """Display names for the screen, as flat rows tagged `kind` = user | evidence | finding.
+
+    Presentation only: the same restrictions as get_evidence / get_findings apply, the read is a custody
+    entry like any other, and the names are never written into the log or into an export."""
+    return _view(conn, role, actor, Resource.EVIDENCE, "directory", _build_directory, pseudonymizer)
+
+
+def resolve_display_name(conn: sqlite3.Connection, user_id: str) -> str:
+    """The signed-in user's display name, or the user id itself if there is no usable name. Never raises
+    for a missing user: a name is a convenience, and the id is always a safe thing to show."""
+    row = conn.execute("SELECT display_name FROM users WHERE user_id = ?", (user_id,)).fetchone()
+    name = row[0] if row else None
+    return name.strip() if isinstance(name, str) and name.strip() else user_id
 
 
 def get_custody_log(conn, role, actor, *, evidence_id=None, pseudonymizer: Pseudonymizer | None = None) -> list[dict]:

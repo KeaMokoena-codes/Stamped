@@ -122,6 +122,34 @@ def require(role, resource: Resource, action: Action) -> Role:
 
 
 # ---------------------------------------------------------------------------
+# 1b. Pages: a role is only offered, and only allowed to open, the pages it needs
+# ---------------------------------------------------------------------------
+# Each page lists what it READS. "all": the role needs every listed permission; "any": at least one.
+# Default deny: a page that is not listed here cannot be opened by any role. This only decides what the UI
+# shows and which page functions run; the data functions in access/data.py still enforce the permissions
+# above on every read, so skipping this check never widens what a role can see.
+PAGE_ACCESS: dict[str, tuple[str, tuple[tuple[Resource, Action], ...]]] = {
+    "case_overview": ("all", ((Resource.EVIDENCE, _V), (Resource.FINDINGS, _V))),
+    "timeline": ("all", ((Resource.TIMELINE, _V),)),
+    "findings": ("all", ((Resource.FINDINGS, _V),)),
+    "custody_history": ("all", ((Resource.CUSTODY_LOG, _V),)),
+    # The tamper-detection demo is a tool for people who work on evidence: only roles that may edit it.
+    "verification": ("all", ((Resource.EVIDENCE, _E),)),
+    "reports": ("any", ((Resource.FINDINGS, _X), (Resource.TIMELINE, _X), (Resource.CUSTODY_LOG, _X))),
+}
+
+
+def can_open_page(role, page: str) -> bool:
+    """True if `role` needs and may use `page`. An unknown role or an unlisted page is simply False."""
+    entry = PAGE_ACCESS.get(page)
+    if entry is None:
+        return False
+    mode, needs = entry
+    checks = [can(role, resource, action) for resource, action in needs]
+    return all(checks) if mode == "all" else any(checks)
+
+
+# ---------------------------------------------------------------------------
 # 2. Field policy (allow-list)
 # ---------------------------------------------------------------------------
 class Vis(str, Enum):
@@ -255,8 +283,13 @@ CUSTODY_FIELDS: dict = {
     "details": CUSTODY_DETAILS,
 }
 
+# Who a user is, for DISPLAY only (Issue: friendly names). `display_name` is the staff member's name as shown
+# in audit and access views; like the custody-log `actor` it is shown to every role. It is never written into a
+# custody entry and never hashed. `active` and `created_at` are not listed, so they stay examiner-only.
+USER_FIELDS: dict = {"user_id": ALL, "display_name": ALL, "role": ALL}
+
 DATASETS: dict[str, dict] = {
-    "evidence": EVIDENCE_FIELDS, "findings": FINDING_FIELDS,
+    "evidence": EVIDENCE_FIELDS, "findings": FINDING_FIELDS, "users": USER_FIELDS,
     "timeline.event": {**TIMELINE_ITEM, "details": EVENT_DETAILS},
     "timeline.finding": {**TIMELINE_ITEM, "details": FINDING_DETAILS},
     "custody_log": CUSTODY_FIELDS,
