@@ -314,7 +314,8 @@ def main(argv=None):
         else:
             sys.exit("give a finding_id or --all")
         if not ids:
-            sys.exit("no findings stored")
+            print("no findings stored")
+            return 0
         results = [reproduce(conn, i, a.geo_db) for i in ids]
         for r in results:
             if a.summary:
