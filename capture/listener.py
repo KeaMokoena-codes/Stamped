@@ -4,8 +4,8 @@ Capture listener: a local stand-in for a real alerting pipeline.
 It exposes one endpoint, ``POST /alert``. A caller posts an evidence bundle
 (format: docs/bundle-format.md). The listener validates the whole bundle,
 stages each file, and calls ``seal_evidence()`` once per file. It does not talk
-to any external service, and it has NO authentication: it binds to loopback by
-default and is meant for the demo, not for exposure to a network.
+to any external service. It binds to loopback by default without authentication;
+non-loopback operation requires an HMAC secret and the production WSGI server.
 
 Run it (from the repository root, after ``python schemas/init_db.py``):
 
@@ -26,6 +26,8 @@ Design rules that matter for safety:
     is configured and must resolve inside it.
   * Error responses never include stack traces or server paths. Request bodies
     are never logged (they may contain evidence).
+  * A non-loopback listener requires STAMPED_CAPTURE_HMAC_SECRET, and only runs
+    under Gunicorn. Signed requests include a timestamp and one-use nonce.
 """
 from __future__ import annotations
 
@@ -33,11 +35,16 @@ import argparse
 import base64
 import binascii
 import hashlib
+import ipaddress
 import json
 import logging
+import os
 import re
 import sys
 import tempfile
+import threading
+import time
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
@@ -50,6 +57,7 @@ from flask import Flask, jsonify, request  # noqa: E402
 from werkzeug.exceptions import HTTPException  # noqa: E402
 
 from access.database import DatabaseError, connect_database  # noqa: E402
+from capture.auth import valid_request_signature  # noqa: E402
 from seal.intake import DEFAULT_SEALED_DIR, IntakeError, seal_evidence  # noqa: E402
 
 log = logging.getLogger("stamped.capture")
@@ -93,6 +101,9 @@ class Settings:
     max_files: int = 10
     max_file_bytes: int = 8 * 1024 * 1024
     max_total_bytes: int = 32 * 1024 * 1024
+    auth_secret: bytes | None = None
+    max_requests_per_minute: int = 60
+    max_replay_cache_entries: int = 10_000
 
 
 class BundleError(Exception):
@@ -347,11 +358,11 @@ def _validate_file(entry, label: str, settings: Settings, errors: list[str]) -> 
         errors.append(f"{label}: file is over the {settings.max_file_bytes} byte limit")
         data = None
 
-    digest = hashlib.sha256(data).hexdigest() if data is not None else None
-    if digest is not None and declared is not None and digest != declared:
-        errors.append(f"{label}.sha256: does not match the file's content")
-
     if len(errors) > start or name is None or kind is None or data is None:
+        return None
+    digest = hashlib.sha256(data).hexdigest()
+    if declared is not None and digest != declared:
+        errors.append(f"{label}.sha256: does not match the file's content")
         return None
     return StagedFile(name=name, kind=kind, data=data, sha256=digest, base_year=base_year)
 
@@ -418,24 +429,88 @@ def seal_bundle(bundle: ValidBundle, settings: Settings) -> list[dict]:
 # ---------------------------------------------------------------------------
 # Flask app
 # ---------------------------------------------------------------------------
-def create_app(settings: Settings | None = None) -> Flask:
+def _is_loopback_host(host: str) -> bool:
+    if host.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host.split("%", 1)[0]).is_loopback
+    except ValueError:
+        return False
+
+
+def create_app(settings: Settings | None = None, *, host: str = "127.0.0.1") -> Flask:
     settings = settings or Settings()
+    if not _is_loopback_host(host) and not settings.auth_secret:
+        raise ValueError("Non-loopback capture listeners require STAMPED_CAPTURE_HMAC_SECRET.")
+    if settings.auth_secret is not None and len(settings.auth_secret) < 32:
+        raise ValueError("STAMPED_CAPTURE_HMAC_SECRET must contain at least 32 bytes.")
+    if settings.max_requests_per_minute < 1:
+        raise ValueError("max_requests_per_minute must be positive.")
+    if settings.max_replay_cache_entries < 1:
+        raise ValueError("max_replay_cache_entries must be positive.")
+
     app = Flask(__name__)
     app.config["MAX_CONTENT_LENGTH"] = settings.max_body_bytes
     app.config["STAMPED_SETTINGS"] = settings
+    rejection_counts = {"rate_limited": 0, "authentication": 0}
+    request_times: OrderedDict[str, deque[float]] = OrderedDict()
+    seen_nonces: OrderedDict[str, float] = OrderedDict()
+    state_lock = threading.Lock()
+    app.extensions["stamped_listener_rejections"] = rejection_counts
+
+    def reject(reason: str, status: int, code: str):
+        with state_lock:
+            rejection_counts[reason] += 1
+        log.warning("capture request rejected: %s", code)
+        return error(status, code)
 
     def error(status: int, code: str, details: list[str] | None = None):
-        body = {"error": code}
+        body: dict[str, str | list[str]] = {"error": code}
         if details:
             body["details"] = details
         return jsonify(body), status
 
     @app.post("/alert")
     def alert():
+        now = time.monotonic()
+        source = request.remote_addr or "unknown"
+        with state_lock:
+            attempts = request_times.pop(source, deque())
+            while attempts and now - attempts[0] >= 60:
+                attempts.popleft()
+            limited = len(attempts) >= settings.max_requests_per_minute
+            if not limited:
+                attempts.append(now)
+            request_times[source] = attempts
+            while len(request_times) > 4096:
+                request_times.popitem(last=False)
+        if limited:
+            return reject("rate_limited", 429, "rate_limited")
+
+        raw = request.get_data(cache=False)  # raises 413 past MAX_CONTENT_LENGTH
+
+        if settings.auth_secret is not None:
+            timestamp = request.headers.get("X-Stamped-Timestamp")
+            nonce = request.headers.get("X-Stamped-Nonce")
+            signature = request.headers.get("X-Stamped-Signature")
+            if not valid_request_signature(
+                settings.auth_secret, timestamp, nonce, signature, raw
+            ):
+                return reject("authentication", 401, "unauthorized")
+            if nonce is None:
+                return reject("authentication", 401, "unauthorized")
+            with state_lock:
+                replayed = nonce in seen_nonces
+                if not replayed:
+                    seen_nonces[nonce] = time.monotonic()
+                    while len(seen_nonces) > settings.max_replay_cache_entries:
+                        seen_nonces.popitem(last=False)
+            if replayed:
+                return reject("authentication", 401, "replayed_request")
+
         if request.mimetype != "application/json":
             return error(415, "unsupported_media_type", ["Content-Type must be application/json"])
         try:
-            raw = request.get_data(cache=False)  # raises 413 past MAX_CONTENT_LENGTH
             bundle = validate_bundle(parse_json(raw), settings)
         except BundleError as exc:
             return error(400, "invalid_bundle", exc.errors)
@@ -460,8 +535,9 @@ def create_app(settings: Settings | None = None) -> Flask:
     @app.errorhandler(HTTPException)
     def http_error(exc: HTTPException):
         codes = {404: "not_found", 405: "method_not_allowed", 413: "payload_too_large"}
-        details = [f"limit is {settings.max_body_bytes} bytes"] if exc.code == 413 else None
-        return error(exc.code or 500, codes.get(exc.code, "http_error"), details)
+        status = exc.code or 500
+        details = [f"limit is {settings.max_body_bytes} bytes"] if status == 413 else None
+        return error(status, codes.get(status, "http_error"), details)
 
     @app.errorhandler(Exception)
     def unexpected(exc: Exception):
@@ -473,7 +549,7 @@ def create_app(settings: Settings | None = None) -> Flask:
 
 def _parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Local capture listener (demo stand-in for an alerting pipeline; no authentication).")
+        description="Loopback demo listener or HMAC-authenticated non-loopback capture listener.")
     parser.add_argument("--host", default="127.0.0.1", help="default: 127.0.0.1 (loopback only)")
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--db", type=Path, default=None, help="default: STAMPED_DB_PATH or data/stamped.db")
@@ -483,22 +559,70 @@ def _parse_args(argv=None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
+def create_app_from_env() -> Flask:
+    host = os.environ.get("STAMPED_CAPTURE_HOST", "127.0.0.1")
+    secret = os.environ.get("STAMPED_CAPTURE_HMAC_SECRET")
+    return create_app(
+        Settings(
+            db_path=Path(os.environ["STAMPED_CAPTURE_DB_PATH"])
+            if os.environ.get("STAMPED_CAPTURE_DB_PATH") else None,
+            sealed_dir=Path(os.environ.get("STAMPED_CAPTURE_SEALED_DIR", DEFAULT_SEALED_DIR)),
+            staging_root=Path(os.environ["STAMPED_CAPTURE_STAGING_ROOT"])
+            if os.environ.get("STAMPED_CAPTURE_STAGING_ROOT") else None,
+            auth_secret=secret.encode("utf-8") if secret else None,
+        ),
+        host=host,
+    )
+
+
 def main(argv=None) -> int:
     args = _parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     if args.staging_root is not None and not args.staging_root.is_dir():
         print(f"--staging-root {args.staging_root} is not a directory", file=sys.stderr)
         return 2
-    settings = Settings(db_path=args.db, sealed_dir=args.sealed_dir, staging_root=args.staging_root)
+    secret = os.environ.get("STAMPED_CAPTURE_HMAC_SECRET")
+    settings = Settings(
+        db_path=args.db,
+        sealed_dir=args.sealed_dir,
+        staging_root=args.staging_root,
+        auth_secret=secret.encode("utf-8") if secret else None,
+    )
+    try:
+        app = create_app(settings, host=args.host)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
     try:
         with connect_database(settings.db_path):
             pass
     except DatabaseError as exc:
         print(f"{exc}", file=sys.stderr)
         return 2
-    if args.host not in ("127.0.0.1", "localhost", "::1"):
-        log.warning("listening on %s: this listener has NO authentication", args.host)
-    create_app(settings).run(host=args.host, port=args.port, threaded=True)
+    if _is_loopback_host(args.host):
+        app.run(host=args.host, port=args.port, threaded=True)
+    else:
+        if sys.platform == "win32":
+            print("Non-loopback capture listeners require a supported Unix host and Gunicorn.", file=sys.stderr)
+            return 2
+        try:
+            from gunicorn.app.wsgiapp import run as gunicorn_run
+        except ImportError:
+            print("Gunicorn is required for a non-loopback capture listener.", file=sys.stderr)
+            return 2
+        os.environ["STAMPED_CAPTURE_HOST"] = args.host
+        if args.db is not None:
+            os.environ["STAMPED_CAPTURE_DB_PATH"] = str(args.db)
+        os.environ["STAMPED_CAPTURE_SEALED_DIR"] = str(args.sealed_dir)
+        if args.staging_root is not None:
+            os.environ["STAMPED_CAPTURE_STAGING_ROOT"] = str(args.staging_root)
+        sys.argv = [
+            "gunicorn",
+            "--bind",
+            f"{args.host}:{args.port}",
+            "capture.listener:create_app_from_env()",
+        ]
+        gunicorn_run()
     return 0
 
 

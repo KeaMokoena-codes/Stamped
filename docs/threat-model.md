@@ -1,0 +1,43 @@
+# Stamped threat model
+
+**Status:** working draft; independent team review is still required. This model
+does not expand the product's claims. Section 2.10 of the HackSecure project
+document remains authoritative: Stamped does not correct evidence altered
+before capture, protect against an insider who controls the database, keys and
+every anchor, fix poor acquisition, decrypt seized data, or decide
+admissibility.
+
+## Trust boundaries and STRIDE
+
+| Component | Spoofing | Tampering | Repudiation | Information disclosure | Denial of service | Elevation of privilege |
+|---|---|---|---|---|---|---|
+| Capture | A caller impersonates an alert source. The local demo listener has no authentication; non-loopback operation must be authenticated. | A submitted bundle or staged file is changed before sealing. The listener validates the complete bundle and declared hashes before sealing. | A collector disputes which bundle was received. Capture metadata and custody entries are recorded, but caller identity is not independently proven in demo mode. | Evidence content may be exposed through logs or errors. Request bodies and server paths must not be logged or returned. | Oversized or repeated requests consume listener resources. The listener has body, file-count and per-file limits; production also needs proxy rate limits. | A malformed file path attempts to write outside staging. Names and paths are validated; staging paths must resolve inside the configured root. |
+| Seal and custody log | A caller supplies an untrusted actor or role. The access layer resolves active users and database roles; the capture process has its fixed collector identity. | Database entries, signatures or evidence files are changed. The log is append-only in SQLite, hash-chained, and can be compared to separately held anchors. | An actor denies a recorded action. Views and exports are logged, but a database-and-anchor administrator may defeat this evidence. | Private key material or role-restricted values leak. Keys are local files in the demo; role filtering is applied before data is returned. | Large logs or repeated access refusals grow storage and verification cost. Refusal throttling and operational storage limits remain tracked work. | Direct calls bypass the UI. Data-access functions authorize independently of page visibility. |
+| Ingest | A user submits an unexpected file or parser input. Only sealed sources are intended for parsing. | Parser output or provenance is changed. Source/output hashes and custody entries link derived artifacts to evidence. | A parser result is disputed. Version, input hash and output hash are recorded for reproducibility. | Raw log data contains personal identifiers. Access projection and pseudonymization control which roles receive them. | Long lines, large files, deeply nested JSON or many records consume resources. Parser-wide resource bounds need an explicit implementation and measurement. | Untrusted fields may influence SQL, paths or reports. SQL values are parameterized; identifiers are selected from constants and report output is autoescaped. |
+| Detect | A finding's source is misrepresented. Findings carry provenance to source evidence and parser artifacts. | A finding or rule output is altered. Stored artifacts and findings retain hashes and rule/version identifiers. | An analysis result is denied. Reproduction records the inputs and expected output; it does not prove that the original source was complete. | Finding details may contain raw usernames, IP addresses or paths. Role-specific projections are applied by the access layer. | Large event sets or pathological inputs can exhaust analysis resources. Parser and detector limits need separate operational review. | A direct call tries to bypass role policy. Role checks belong to the access layer and are exercised across the role/resource matrix. |
+| Report | A report request is made by an unauthenticated or wrong identity. Demo sign-in is intentionally weak; OIDC is optional and its provider must enforce MFA. | Hostile content attempts to alter rendered output or file paths. Case references are restricted and Jinja autoescaping is enabled. | An exported report is disputed. Export actions and their hashes are logged; the report itself does not replace independent verification. | A report exposes a value hidden from a role. Data is fetched through role-filtered functions before rendering. | Large reports or PDF rendering consume resources. No report size limit has been measured yet. | A case reference or embedded URI attempts to escape the intended output. Case references are validated and PDF resource loading is disabled. |
+| Access layer | Demo user IDs are not credentials; OIDC identities are mapped to active user rows. | Permission or field-policy tables are changed. They are code-reviewed and tested against the documented matrix. | A user disputes a view or denial. Access actions are written to the append-only custody log; log-write failure blocks data release. | Personal information is returned to a role that does not need it. Column projection, nested-field policy and pseudonymization are applied before return. | Repeated refused sign-ins could flood the append-only log. Rate-limited summary logging remains required work. | A user supplies a role directly or invokes a function outside the UI. The data functions parse the database-resolved role and deny by default. |
+| Independent verifier | An export includes substituted keys or anchors. Both signature schemes and the anchor chain must verify. | A log, anchor or exported file is changed. The verifier checks the custody chain and anchor consistency; sealed evidence bytes are not currently part of its export format. | A party denies verification output. The verifier is standalone and emits structured results and exit codes. | Hostile package paths could cause reads outside the package. Symlinked database, public-key, anchor and re-seal-key paths are rejected. | Oversized or deeply nested inputs may exhaust resources. Anchor and re-seal key JSON files have explicit size limits; a whole-package resource budget remains future work. | A forged package attempts to turn failure into PASS. Results are fail-closed; both hybrid signatures are required. |
+
+## Abuse cases and evidence
+
+| Abuse case | Automated evidence or accepted limit |
+|---|---|
+| Forged capture bundle / invalid declared hash | `tests/test_listener.py`: invalid bundle cases reject before sealing. |
+| Sealed file replaced after sealing | Not represented in the verifier export format today; the standalone verifier checks the custody database, anchors and re-seals, not sealed evidence bytes. This is a documented format limit, not a passed test. |
+| Database edited and the chain recomputed | `tests/test_verify.py::test_a_perfectly_rewritten_chain_passes_the_chain_check_on_its_own`; the anchor check is required to detect an anchored rewrite. |
+| Newest anchor or newest unanchored tail deleted | `tests/test_verify.py::test_deleting_the_newest_entries_is_caught_by_the_anchors`; deletion beyond the newest surviving anchor is a documented limit. |
+| One hybrid signature removed or corrupted | `tests/test_verify.py::test_one_bad_signature_fails_and_names_which`; both schemes are required. |
+| Role escalation by calling a data function directly | `tests/test_access.py` permission and field-policy matrix tests. |
+| Hostile HTML / SQL / path text in a report | `tests/test_report_security.py`; SQL structure uses fixed table/column constants and bound values. |
+| PDF content tries to load a local or remote resource | `tests/test_report_security.py::test_pdf_renderer_never_resolves_local_or_remote_resources`. |
+| Stolen file-based signing key | Accepted demo limitation: file permissions do not protect a key from the account that can read it. Production key custody, backup and rotation require a KMS/HSM design and operational review. |
+| Oversized listener bundle | `tests/test_listener.py` size-limit tests. |
+| Tampered export package | `tests/test_verify.py` tampering and malformed-input cases. |
+| Compromised dependency | Dependency audit is a CI check; it cannot establish that a dependency is trustworthy or that a native build was not compromised. The current `xhtml2pdf==0.2.28` dependency caps Pillow below 13; the resolved Pillow 12.3.0 has reported advisories, so the audit remains a visible blocker until an upstream-compatible fix or PDF dependency decision is available. |
+
+## Review record
+
+Independent reviewer: **pending**. Review date: **pending**. No reviewer has
+been assigned or recorded in the supplied materials, so this draft is not
+marked as independently reviewed.

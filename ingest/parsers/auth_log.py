@@ -80,9 +80,13 @@ def parse_auth_line(
             # Routine sshd connection/PAM/disconnect message: ignored, not unparseable
             return None, False, month
 
-    dt = datetime(
-        current_year, month, day, time_parts[0], time_parts[1], time_parts[2], tzinfo=timezone.utc
-    )
+    try:
+        dt = datetime(
+            current_year, month, day, time_parts[0], time_parts[1], time_parts[2],
+            tzinfo=timezone.utc,
+        )
+    except ValueError:
+        return None, True, month
     raw_ref = f"line:{line_number}"
     event_id = make_event_id(evidence_id, raw_ref)
 

@@ -13,6 +13,7 @@ and external anchors are for (the report's disclaimer says so).
 """
 import argparse
 import datetime
+import re
 import sys
 from io import BytesIO
 from pathlib import Path
@@ -33,6 +34,20 @@ try:
     XHTML2PDF_AVAILABLE = True
 except ImportError:
     XHTML2PDF_AVAILABLE = False
+
+CASE_ID_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}\Z", re.ASCII)
+
+
+def validate_case_id(case_id: str) -> str:
+    """Reject unsafe case references before report rendering or filename creation."""
+    if not isinstance(case_id, str) or not CASE_ID_RE.fullmatch(case_id):
+        raise ValueError("Case reference must start with a letter or digit and contain only letters, digits, '_' or '-'.")
+    return case_id
+
+
+def _deny_pdf_resource(uri: str, _relative_to: str | None = None):
+    """PDF reports are self-contained; never let content trigger file or network reads."""
+    raise ValueError("PDF resource loading is disabled.")
 
 
 def _internal_chain_check(conn) -> str:
@@ -55,11 +70,8 @@ def generate_full_report(case_id: str, role: str, actor: str, pseudonymizer=None
     ``db_path`` is optional; without it the configured shared database is used
     (STAMPED_DB_PATH, else data/stamped.db)."""
 
+    case_id = validate_case_id(case_id)
     with connect_database(db_path) as conn:
-        # Checked BEFORE the reads below: each read appends its own "viewed_*" custody entry, and
-        # checking first makes the entries verified exactly the entries listed in section 3.
-        verification_status = _internal_chain_check(conn)
-
         # Names are for reading only (a user's display name, an evidence file name, a finding title). They come
         # from the same role-restricted views as the data below and are never stored, hashed or exported as
         # data; if they cannot be looked up the report simply shows the stored identifiers.
@@ -70,9 +82,12 @@ def generate_full_report(case_id: str, role: str, actor: str, pseudonymizer=None
         except Exception:  # noqa: BLE001 - a missing name must never stop the report; ids are shown instead
             directory = EMPTY_DIRECTORY
 
-        custody_logs = get_custody_log(conn, role, actor, pseudonymizer=pseudonymizer)
         evidence = get_evidence(conn, role, actor, pseudonymizer=pseudonymizer)
         findings = get_findings(conn, role, actor, pseudonymizer=pseudonymizer)
+        # These views append access records. Check the chain after them, then read the custody
+        # snapshot last; its own access record is appended after the snapshot is returned.
+        verification_status = _internal_chain_check(conn)
+        custody_logs = get_custody_log(conn, role, actor, pseudonymizer=pseudonymizer)
 
         last_anchor_date = "No anchor recorded"
         row = conn.execute(
@@ -106,7 +121,9 @@ def generate_full_report(case_id: str, role: str, actor: str, pseudonymizer=None
     pdf_out = None
     if XHTML2PDF_AVAILABLE:
         result = BytesIO()
-        pisa_status = pisa.CreatePDF(BytesIO(html_out.encode("utf-8")), dest=result)
+        pisa_status = pisa.CreatePDF(
+            BytesIO(html_out.encode("utf-8")), dest=result, link_callback=_deny_pdf_resource
+        )
         if not pisa_status.err:
             pdf_out = result.getvalue()
 

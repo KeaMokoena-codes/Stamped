@@ -14,49 +14,57 @@ on:
 jobs:
   test-and-guardrails:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: "pip"
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
 
-      - name: Install dependencies (excluding liboqs-python)
+      - name: Install native build prerequisites
         run: |
-          grep -v "^liboqs-python" requirements.txt > /tmp/requirements-core.txt
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build
+
+      - name: Install dependencies
+        run: |
           pip install --upgrade pip
-          pip install -r /tmp/requirements-core.txt
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
 
-      - name: Try installing liboqs-python (non-blocking)
-        id: liboqs
-        continue-on-error: true
-        run: pip install liboqs-python==0.16.0.1
-
-      - name: Report liboqs status
-        run: |
-          if [ "${{ steps.liboqs.outcome }}" = "success" ]; then
-            echo "liboqs-python installed — full crypto test suite will run."
-          else
-            echo "::warning::liboqs-python failed to install on the CI runner. \
-            This mirrors the build risk flagged in Issue 0.3 — tests that depend \
-            on it are skipped here, not passed. Verify ML-DSA signing on a real \
-            team machine before trusting that path."
-          fi
+      - name: Require working ML-DSA
+        run: python scripts/check_liboqs.py
 
       - name: Run guardrail checks
         run: python scripts/ci_guardrails.py
 
       - name: Run test suite
-        run: |
-          pytest -v --tb=short
-          code=$?
-          if [ $code -eq 5 ]; then
-            echo "::warning::No tests collected yet. That's expected early on, but every \
-            module's Definition of Done in the issues backlog requires tests — this should \
-            stop being green-by-default well before feature freeze on 22 Oct."
-            exit 0
-          fi
-          exit $code
+        run: python -m pytest -v --tb=short --strict-config --strict-markers --cov=seal --cov=access --cov=verifier --cov=capture --cov-branch --cov-report=term
+
+      - name: Run demo end-to-end contract
+        run: python -m scripts.run_e2e
+
+      - name: Run dependency audit
+        run: python -m pip_audit -r requirements.txt
+
+      - name: Run Bandit
+        run: bandit -r app access capture detect ingest report seal verifier -lll
+
+      - name: Run Ruff security rules
+        run: ruff check --select S app access capture detect ingest report seal verifier
+
+      - name: Run mypy on security-critical modules
+        run: mypy --ignore-missing-imports --follow-imports=silent capture/auth.py capture/listener.py
+
+      - name: Run Semgrep
+        run: semgrep scan --error --config p/python --config p/flask --config p/owasp-top-ten app access capture detect ingest report seal verifier

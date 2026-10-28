@@ -105,8 +105,9 @@ def fetch_chain_rows(conn: sqlite3.Connection) -> list[tuple]:
     Row order: entry_id, timestamp_utc, actor, role, action, evidence_id,
     artifact_id, details_json, prev_hash, entry_hash.
     """
+    # CHAIN_COLUMNS is a fixed module-level list of database column names.
     return conn.execute(
-        f"SELECT {CHAIN_COLUMNS} FROM custody_log ORDER BY entry_id ASC"
+        f"SELECT {CHAIN_COLUMNS} FROM custody_log ORDER BY entry_id ASC"  # noqa: S608
     ).fetchall()
 
 

@@ -217,7 +217,9 @@ def _run_steps(conn, finding_id, geo_db, step):
     parsers = _parsers()
     derived = {}
     for ev_id in evidence_ids:
-        recs = conn.execute("SELECT tool_name, tool_version, input_hash, output_hash FROM artifacts "
+        # The IN clause contains only placeholders; parser names remain bound parameters.
+        recs = conn.execute(
+                            "SELECT tool_name, tool_version, input_hash, output_hash FROM artifacts "  # noqa: S608
                             "WHERE source_evidence_id = ? AND tool_name IN (%s)" % ",".join("?" * len(parsers)),
                             (ev_id, *parsers)).fetchall()
         step("events_rederived", bool(recs), f"parser record found for {ev_id[:12]}.." if recs else

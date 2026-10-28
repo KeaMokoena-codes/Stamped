@@ -82,6 +82,19 @@ def test_app_shows_an_explicit_empty_database_login_state(tmp_path, monkeypatch)
     assert not app.dataframe
 
 
+def test_oidc_mode_does_not_render_the_typed_user_id_login(tmp_path, monkeypatch):
+    db_path = tmp_path / "stamped.db"
+    _create_app_db(db_path)
+    monkeypatch.setenv("STAMPED_DB_PATH", str(db_path))
+    monkeypatch.setenv("STAMPED_AUTH_MODE", "oidc")
+
+    app = AppTest.from_file(str(APP_PATH)).run(timeout=15)
+    assert not app.exception
+    assert any("identity-provider settings are missing" in error.value for error in app.error)
+    assert not any(item.key == "stamped_login_user_id" for item in app.text_input)
+    assert not app.dataframe
+
+
 def test_registered_login_opens_real_case_views_without_mock_data(tmp_path, monkeypatch):
     db_path = tmp_path / "stamped.db"
     _create_app_db(db_path)
@@ -307,7 +320,7 @@ def test_custody_history_shows_display_names_and_keeps_the_stored_ids_in_the_det
     officer.session_state["stamped_actor"] = "officer-1"
     officer.run(timeout=15)
     assert not officer.exception
-    shown = "\n".join(str(element.value) for element in officer.dataframe)
+    shown = "\n".join(element.value.to_string() for element in officer.dataframe)
     assert "Examiner One" in shown                  # the display name, in the plain table
     assert "examiner-1" in shown                    # the stored id, in the technical details
     assert original_name in shown                   # the officer may see the original file name
@@ -316,7 +329,7 @@ def test_custody_history_shows_display_names_and_keeps_the_stored_ids_in_the_det
     prosecutor.session_state["stamped_actor"] = "prosecutor-1"
     prosecutor.run(timeout=15)
     assert not prosecutor.exception
-    shown = "\n".join(str(element.value) for element in prosecutor.dataframe)
+    shown = "\n".join(element.value.to_string() for element in prosecutor.dataframe)
     assert "Examiner One" in shown                  # actor names are shown to every role
     assert original_name not in shown               # a friendly name never reveals a hidden field
 

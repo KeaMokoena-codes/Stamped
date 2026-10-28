@@ -71,6 +71,8 @@ ED25519_PUB_FILE = "ed25519_public.bin"
 MLDSA_PUB_FILE = "mldsa65_public.bin"
 PUB_MANIFEST_FILE = "public_keys.json"
 DEFAULT_DB_NAME = "stamped.db"
+MAX_ANCHOR_BYTES = 16 * 1024 * 1024
+MAX_RESEAL_KEY_BYTES = 1024 * 1024
 
 PASS, FAIL, ERROR, SKIPPED = "PASS", "FAIL", "ERROR", "SKIPPED"
 
@@ -123,6 +125,8 @@ def compute_entry_hash(fields: dict, prev_hash: str) -> str:
 # ---------------------------------------------------------------------------
 def read_custody_log(db_path: Path) -> list[tuple]:
     """Read every entry, oldest first, through a READ-ONLY connection."""
+    if db_path.is_symlink():
+        raise VerifierError(f"Database path must not be a symbolic link: {_safe(db_path)}")
     if not db_path.is_file():
         raise VerifierError(f"Database file not found: {_safe(db_path)}")
     try:
@@ -142,11 +146,15 @@ def read_custody_log(db_path: Path) -> list[tuple]:
 
 
 def read_public_keys(public_dir: Path) -> dict:
+    if public_dir.is_symlink():
+        raise VerifierError(f"Public key folder must not be a symbolic link: {_safe(public_dir)}")
     if not public_dir.is_dir():
         raise VerifierError(f"Public key folder not found: {_safe(public_dir)}")
+    key_paths = (public_dir / ED25519_PUB_FILE, public_dir / MLDSA_PUB_FILE)
+    if any(path.is_symlink() for path in key_paths):
+        raise VerifierError("Public key files must not be symbolic links.")
     try:
-        ed_pub = (public_dir / ED25519_PUB_FILE).read_bytes()
-        pq_pub = (public_dir / MLDSA_PUB_FILE).read_bytes()
+        ed_pub, pq_pub = (path.read_bytes() for path in key_paths)
     except OSError as exc:
         raise VerifierError(f"Could not read public keys from {_safe(public_dir)}: {type(exc).__name__}") from exc
     if not ed_pub or not pq_pub:
@@ -307,6 +315,8 @@ def _parse_anchor(path: Path) -> dict:
 def check_anchors(rows: list[tuple], anchor_dir: Path, keys: dict, *, allow_no_anchors: bool = False) -> dict:
     """Signature problems are filed under check 2; numbering, linking and
     agreement with the live log under check 3."""
+    if anchor_dir.is_symlink():
+        raise VerifierError(f"Anchor folder must not be a symbolic link: {_safe(anchor_dir)}")
     if not anchor_dir.is_dir():
         raise VerifierError(f"Anchor folder not found: {_safe(anchor_dir)}")
 
@@ -364,6 +374,42 @@ def check_anchors(rows: list[tuple], anchor_dir: Path, keys: dict, *, allow_no_a
 
     for seq in sorted(found):
         path = found[seq]
+        if path.is_symlink():
+            sfail("anchor_path_invalid",
+                  f"{_safe(path.name)} must be a regular file inside the export, not a symbolic link.",
+                  anchor_seq=seq)
+            con_failures.append({"code": "anchor_path_invalid",
+                                 "message": f"{_safe(path.name)} is not a regular package file.",
+                                 "anchor_seq": seq})
+            anchors_out.append({"seq": seq, "file": path.name, "readable": False})
+            continue
+        if not path.is_file():
+            sfail("anchor_unreadable", f"{_safe(path.name)} is unreadable or malformed (not a regular file).",
+                  anchor_seq=seq)
+            con_failures.append({"code": "anchor_unreadable",
+                                 "message": f"{_safe(path.name)} could not be read.",
+                                 "anchor_seq": seq})
+            anchors_out.append({"seq": seq, "file": path.name, "readable": False})
+            prev_hash_seen = None
+            continue
+        try:
+            if path.stat().st_size > MAX_ANCHOR_BYTES:
+                sfail("anchor_too_large",
+                      f"{_safe(path.name)} exceeds the {MAX_ANCHOR_BYTES}-byte limit.",
+                      anchor_seq=seq)
+                con_failures.append({"code": "anchor_too_large",
+                                     "message": f"{_safe(path.name)} exceeds the package size limit.",
+                                     "anchor_seq": seq})
+                anchors_out.append({"seq": seq, "file": path.name, "readable": False})
+                continue
+        except OSError as exc:
+            sfail("anchor_unreadable", f"{_safe(path.name)} could not be inspected ({type(exc).__name__}).",
+                  anchor_seq=seq)
+            con_failures.append({"code": "anchor_unreadable",
+                                 "message": f"{_safe(path.name)} could not be inspected.",
+                                 "anchor_seq": seq})
+            anchors_out.append({"seq": seq, "file": path.name, "readable": False})
+            continue
         try:
             a = _parse_anchor(path)
         except ValueError as exc:
@@ -499,6 +545,8 @@ def read_reseal_keys(public_dir: Path) -> dict:
     its own key id is evidence of alteration, so it is kept and reported, not skipped."""
     folder = public_dir / RESEAL_KEY_DIR
     keys: dict[str, dict] = {}
+    if folder.is_symlink():
+        raise VerifierError(f"Re-seal key folder must not be a symbolic link: {_safe(folder)}")
     if not folder.is_dir():
         return keys
     try:
@@ -507,6 +555,13 @@ def read_reseal_keys(public_dir: Path) -> dict:
         raise VerifierError(f"Could not list {_safe(folder)}: {type(exc).__name__}") from exc
     for path in files:
         claimed = path.stem
+        if path.is_symlink() or not path.is_file():
+            raise VerifierError(f"Re-seal key must be a regular package file: {_safe(path.name)}")
+        try:
+            if path.stat().st_size > MAX_RESEAL_KEY_BYTES:
+                raise VerifierError(f"Re-seal key exceeds the {MAX_RESEAL_KEY_BYTES}-byte limit: {_safe(path.name)}")
+        except OSError as exc:
+            raise VerifierError(f"Could not inspect re-seal key {_safe(path.name)}: {type(exc).__name__}") from exc
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
             if record.get("format") != RESEAL_KEY_FORMAT:

@@ -10,10 +10,13 @@ listener URL you give it. Exit code: 0 on a 2xx response, 1 otherwise.
 """
 import argparse
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
+
+from capture.auth import signed_headers
 
 DEFAULT_BUNDLE = Path(__file__).resolve().parent.parent / "data" / "sample" / "bundle_example.json"
 
@@ -30,8 +33,11 @@ def main(argv=None) -> int:
         print(f"Cannot read {args.bundle}: {exc}", file=sys.stderr)
         return 1
 
-    request = urllib.request.Request(args.url, data=body, method="POST",
-                                     headers={"Content-Type": "application/json"})
+    headers = {"Content-Type": "application/json"}
+    secret = os.environ.get("STAMPED_CAPTURE_HMAC_SECRET")
+    if secret:
+        headers.update(signed_headers(secret.encode("utf-8"), body))
+    request = urllib.request.Request(args.url, data=body, method="POST", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             status, payload = response.status, response.read()

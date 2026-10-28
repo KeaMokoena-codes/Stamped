@@ -4,6 +4,20 @@ Purpose: catch fragility before judging day. "It worked once on my machine" does
 A rehearsal only counts when it is run from a clean environment (no `data/stamped.db`,
 no `keys/`, no caches, no previously running app).
 
+## Demo contract
+
+The following stay available and working in default demo mode:
+
+- Sign-in by typed user ID for users created with `scripts/create_user.py`.
+- The five stages in the project document: Capture, Seal, Ingest, Detect and Report.
+- The **Run tamper-detection demo** button; it runs the real verifier against a disposable synthetic case and catches the injected edit.
+- HTML/PDF report export when the corresponding report dependencies are installed.
+- All fixtures under `data/sample/`, `data/public_samples/`, and synthetic cases created by `scripts/repro_demo.py` and `scripts/run_e2e.py`.
+- Offline operation with Streamlit usage statistics disabled.
+
+CI checks the `data/sample/` SHA-256 manifest, runs the app tamper demo three times
+through `tests/test_app_demo.py`, and runs `python -m scripts.run_e2e`.
+
 ## What the demo actually does
 
 The Verification page button `demo: simulate tampering` runs two subprocesses from the repo root:
@@ -31,7 +45,7 @@ Manual part (once per rehearsal, from a fresh clone or a fresh `venv`):
 ```bash
 git clone <repo-url> && cd <repo>
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 python schemas/init_db.py
 python -m scripts.create_user --user-id examiner1 --display-name "Demo Examiner" --role examiner
 python -m streamlit run run_app.py

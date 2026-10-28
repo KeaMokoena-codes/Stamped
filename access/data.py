@@ -172,7 +172,8 @@ def _visible_columns(columns, spec: dict, role: Role, always=()):
 
 
 def _rows(conn, table: str, columns: list[str], where: str, params: tuple, order: str) -> list[dict]:
-    sql = f"SELECT {', '.join(columns)} FROM {table}{where} ORDER BY {order}"       # names come from constants above
+    # Identifiers and predicates are assembled only from module constants.
+    sql = f"SELECT {', '.join(columns)} FROM {table}{where} ORDER BY {order}"  # noqa: S608
     return [dict(zip(columns, row)) for row in conn.execute(sql, params).fetchall()]
 
 
@@ -244,7 +245,7 @@ def _load_parser_events(conn: sqlite3.Connection, evidence_id=None) -> list:
         params.append(evidence_id)
 
     rows = conn.execute(
-        "SELECT e.evidence_id, e.sealed_path, a.tool_name, a.tool_version, "
+        "SELECT e.evidence_id, e.sealed_path, a.tool_name, a.tool_version, "  # noqa: S608
         "a.input_hash, a.output_hash, a.metadata_json FROM evidence e "
         "JOIN artifacts a ON a.source_evidence_id = e.evidence_id "
         f"WHERE {' AND '.join(clauses)} "
