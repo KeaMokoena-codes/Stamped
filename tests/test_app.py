@@ -78,7 +78,7 @@ def test_app_shows_an_explicit_empty_database_login_state(tmp_path, monkeypatch)
 
     app = AppTest.from_file(str(APP_PATH)).run(timeout=15)
     assert not app.exception
-    assert any("add an active user" in info.value for info in app.info)
+    assert any("Sign in with your user ID" in info.value for info in app.info)
     assert not app.dataframe
 
 
@@ -116,7 +116,7 @@ def test_app_switches_to_the_role_registered_for_the_new_user(tmp_path, monkeypa
     app.run(timeout=15)
 
     assert not app.exception
-    assert any("officer-1 (investigating_officer)" in caption.value for caption in app.caption)
+    assert any("officer-1 (Investigating officer)" in caption.value for caption in app.caption)
     assert any(element.value == "Investigation workspace" for element in app.subheader)
     assert any(element.label == "Filter leads by severity" for element in app.selectbox)
 
@@ -125,7 +125,7 @@ def test_app_switches_to_the_role_registered_for_the_new_user(tmp_path, monkeypa
     app.run(timeout=15)
 
     assert not app.exception
-    assert any("prosecutor-1 (prosecutor)" in caption.value for caption in app.caption)
+    assert any("prosecutor-1 (Prosecutor)" in caption.value for caption in app.caption)
     assert any(
         element.value == "Prosecution case brief" for element in app.subheader
     ), [element.value for element in app.subheader]
@@ -204,14 +204,14 @@ def test_direct_page_routes_still_render_only_role_projected_data(tmp_path, monk
     monkeypatch.setenv("STAMPED_PSEUDONYM_KEY", str(key_path))
 
     for role, actor in (
-        ("investigating_officer", "officer-1"),
-        ("prosecutor", "prosecutor-1"),
+            ("investigating_officer", "officer-1"),
+            ("prosecutor", "prosecutor-1"),
     ):
         for page in (
-            _run_case_overview,
-            _run_findings_page,
-            _run_timeline_page,
-            _run_custody_history_page,
+                _run_case_overview,
+                _run_findings_page,
+                _run_timeline_page,
+                _run_custody_history_page,
         ):
             app = AppTest.from_function(page)
             app.session_state["stamped_actor"] = actor
@@ -223,10 +223,10 @@ def test_direct_page_routes_still_render_only_role_projected_data(tmp_path, monk
                 for element in (*app.dataframe, *app.json)
             )
             for private_value in (
-                secret_path,
-                secret_metadata,
-                "EXAMINER-ONLY-GEO-DATABASE",
-                "EXAMINER-ONLY-RAW-DETAILS",
+                    secret_path,
+                    secret_metadata,
+                    "EXAMINER-ONLY-GEO-DATABASE",
+                    "EXAMINER-ONLY-RAW-DETAILS",
             ):
                 assert private_value not in rendered_data
             if role == "prosecutor":

@@ -1,0 +1,15 @@
+# Stamped colour theme. The colours come from what the product is:
+#   ink navy      (#1B2A41)  notary / court ink: trust, authority, primary buttons
+#   parchment     (#F7F3E8)  paper evidence is printed on: page background
+#   brass seal    (#8A6420)  the seal / stamp: accent rules (set in app/theme.py)
+# Red, green and amber are NOT used here. They are reserved for FAIL, PASS and
+# ERROR results (app/theme.py) so a brand colour can never be mistaken for a verdict.
+# Every text/background pair below passes WCAG AA (4.5:1).
+
+[theme]
+base = "light"
+primaryColor = "#1B2A41"
+backgroundColor = "#F7F3E8"
+secondaryBackgroundColor = "#EBE4D2"
+textColor = "#1F2933"
+font = "sans serif"

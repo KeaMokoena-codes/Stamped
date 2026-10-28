@@ -13,7 +13,7 @@ def _run_verification_page():
 
 
 def test_tamper_demo_runs_real_verifier_on_isolated_case_three_times(
-    tmp_path, monkeypatch
+        tmp_path, monkeypatch
 ):
     database_path = tmp_path / "stamped.db"
     with sqlite3.connect(database_path) as connection:
@@ -46,7 +46,7 @@ def test_tamper_demo_runs_real_verifier_on_isolated_case_three_times(
 
         assert not app.exception
         assert any(
-            button.label == "demo: simulate tampering" for button in app.button
+            button.label == "Run tamper-detection demo" for button in app.button
         )
         assert any(
             "disposable copy" in warning.value for warning in app.warning
@@ -55,15 +55,17 @@ def test_tamper_demo_runs_real_verifier_on_isolated_case_three_times(
         next(
             button
             for button in app.button
-            if button.label == "demo: simulate tampering"
+            if button.label == "Run tamper-detection demo"
         ).click()
         app.run(timeout=60)
 
         assert not app.exception
-        assert any(
-            "first broken custody entry is #2" in error.value
-            for error in app.error
-        )
+        # The verdict is a styled card (Markdown), not a plain alert box. It must say FAIL,
+        # name the broken entry, and never read like a pass (Issue #31 guardrail).
+        card = "\n".join(element.value for element in app.markdown)
+        assert "RESULT: FAIL" in card
+        assert "first entry that no longer matches is #2" in card
+        assert "RESULT: PASS" not in card
         verifier_output = "\n".join(element.value for element in app.code)
         assert '"tool": "stamped-verify/1"' in verifier_output
         assert '"overall": "FAIL"' in verifier_output

@@ -1,6 +1,7 @@
 """Streamlit entry point for the Stamped case workspace."""
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -27,6 +28,21 @@ from access import (
     get_timeline_from_db,
     resolve_role,
 )
+from app.plain_language import (
+    CUSTODY_COLUMNS,
+    EVIDENCE_COLUMNS,
+    FINDINGS_COLUMNS,
+    GLOSSARY,
+    demo_expectation,
+    friendly_error,
+    plain_rows,
+    role_label,
+    signin_error,
+    summarise_verification,
+)
+from app.theme import inject_theme, show_verdict
+
+LOGGER = logging.getLogger("stamped.app")
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PSEUDONYM_KEY = REPOSITORY_ROOT / "keys" / "pseudonym.key"
@@ -48,28 +64,35 @@ def _identity() -> tuple[str, Role] | None:
         with connect_database() as connection:
             role = resolve_role(connection, actor)
     except (AccessError, DatabaseError) as exc:
-        st.sidebar.error(f"Could not resolve this login: {exc}")
+        _sidebar_problem(exc)
         st.session_state.pop("stamped_actor", None)
         return None
     return actor, role
 
 
+def _sidebar_problem(exc: Exception) -> None:
+    """Sign-in trouble in plain words. The raw exception goes to the server log, not the screen."""
+    LOGGER.warning("Sign-in problem (%s): %s", type(exc).__name__, exc)
+    friendly = signin_error(exc)
+    st.sidebar.error(f"{friendly.what_happened} {friendly.what_to_do}")
+
+
 def _login_sidebar() -> tuple[str, Role] | None:
     with st.sidebar.form("demo_login"):
-        user_id = st.text_input("Registered user ID", key="stamped_login_user_id")
-        submitted = st.form_submit_button("Sign in / switch user")
+        user_id = st.text_input("Your user ID", key="stamped_login_user_id")
+        submitted = st.form_submit_button("Sign in (or switch user)")
 
     if submitted:
         user_id = user_id.strip()
         if not user_id:
-            st.sidebar.error("Enter a registered user ID.")
+            st.sidebar.error("Please type your user ID, then press Sign in.")
             st.session_state.pop("stamped_actor", None)
         else:
             try:
                 with connect_database() as connection:
                     resolve_role(connection, user_id)
             except (AccessError, DatabaseError) as exc:
-                st.sidebar.error(f"Sign-in failed: {exc}")
+                _sidebar_problem(exc)
                 st.session_state.pop("stamped_actor", None)
             else:
                 st.session_state["stamped_actor"] = user_id
@@ -79,7 +102,7 @@ def _login_sidebar() -> tuple[str, Role] | None:
         return None
 
     actor, role = identity
-    st.sidebar.caption(f"Signed in: {actor} ({role.value})")
+    st.sidebar.caption(f"Signed in: {actor} ({role_label(role)})")
     if st.sidebar.button("Sign out", key="stamped_sign_out"):
         st.session_state.pop("stamped_actor", None)
         st.rerun()
@@ -89,24 +112,52 @@ def _login_sidebar() -> tuple[str, Role] | None:
 def _page_identity() -> tuple[str, Role] | None:
     identity = _identity()
     if identity is None:
-        st.info("Sign in with a registered user ID to open a case view.")
+        st.info("Please sign in using the panel on the left to see this page.")
     return identity
 
 
-def _load_error(exc: Exception) -> None:
-    st.error(f"Could not load this view: {exc}")
+def _load_error(exc: Exception, headline: str = "This page could not be shown.") -> None:
+    """What happened and what to do. The raw exception goes to the server log, never the screen."""
+    LOGGER.warning("Dashboard error (%s): %s", type(exc).__name__, exc, exc_info=exc)
+    friendly = friendly_error(exc)
+    st.error(f"{headline} {friendly.what_happened}\n\n**What to do:** {friendly.what_to_do}")
+    st.caption(
+        f"Reference for your administrator: {friendly.reference}. "
+        "The full technical record is in the server log."
+    )
 
 
-def _show_records(title: str, rows: list[dict], empty_message: str) -> None:
+def _show_records(
+        title: str,
+        rows: list[dict],
+        empty_message: str,
+        columns: tuple[tuple[str, str], ...] | None = None,
+) -> None:
+    """Plain table first; the complete stored record stays one click away.
+
+    Both tables are built from the same rows the access layer returned for this role,
+    so nothing is added, and nothing a role may not see can appear.
+    """
     st.subheader(title)
-    if rows:
-        st.dataframe(rows, width="stretch")
-    else:
+    if not rows:
         st.info(empty_message)
+        return
+    plain = plain_rows(rows, columns) if columns else None
+    if plain is None:
+        st.dataframe(rows, width="stretch")
+        return
+    st.dataframe(plain, width="stretch")
+    with st.expander("Technical details: the full record"):
+        st.caption(
+            "Every stored field, including fingerprints, identifiers and raw data, "
+            "exactly as recorded."
+        )
+        st.dataframe(rows, width="stretch")
 
 
 def case_overview() -> None:
     st.header("Case overview")
+    st.caption("A summary of the evidence and findings your role is allowed to see.")
     identity = _page_identity()
     if identity is None:
         return
@@ -128,7 +179,7 @@ def case_overview() -> None:
 
     if role is Role.EXAMINER:
         st.subheader("Forensic analysis workspace")
-        st.caption("Review the full-fidelity evidence record and the findings derived from it.")
+        st.caption("The complete evidence record and the findings drawn from it.")
         evidence_metric, findings_metric = st.columns(2)
         evidence_metric.metric("Evidence items", len(evidence))
         findings_metric.metric("Findings", len(findings))
@@ -136,13 +187,16 @@ def case_overview() -> None:
             "Evidence register",
             evidence,
             "No evidence items are recorded in the shared database yet.",
+            EVIDENCE_COLUMNS,
         )
-        _show_records("Analysis findings", findings, "No findings are recorded yet.")
+        _show_records(
+            "Analysis findings", findings, "No findings are recorded yet.", FINDINGS_COLUMNS
+        )
     elif role is Role.INVESTIGATING_OFFICER:
         st.subheader("Investigation workspace")
         st.caption(
-            "Prioritize operational leads and follow the real account and IP identifiers "
-            "available to this role."
+            "Start with the most serious leads. In this role you can see the real account "
+            "names and IP addresses."
         )
         high_priority = sum(
             str(finding.get("severity", "")).lower() in {"critical", "high"}
@@ -158,7 +212,7 @@ def case_overview() -> None:
             "Filter leads by severity",
             ["All"] + severities,
             key="stamped_investigation_severity",
-        )
+            )
         visible_findings = (
             findings
             if selected_severity == "All"
@@ -172,17 +226,19 @@ def case_overview() -> None:
             "Investigative leads",
             visible_findings,
             "No findings are recorded yet.",
+            FINDINGS_COLUMNS,
         )
         _show_records(
             "Evidence available to investigate",
             evidence,
             "No evidence items are recorded in the shared database yet.",
+            EVIDENCE_COLUMNS,
         )
     else:
         st.subheader("Prosecution case brief")
         st.caption(
-            "Review the masked case findings alongside the evidence schedule and "
-            "documented chain of custody."
+            "In this view, names, accounts and IP addresses are replaced with codes. Review "
+            "the findings, the list of evidence and who has handled it."
         )
         serious_findings = sum(
             str(finding.get("severity", "")).lower() in {"critical", "high"}
@@ -192,22 +248,29 @@ def case_overview() -> None:
         findings_metric.metric("Case findings", len(findings))
         serious_metric.metric("High-priority findings", serious_findings)
         custody_metric.metric("Custody entries", len(custody))
-        _show_records("Findings for review", findings, "No findings are recorded yet.")
+        _show_records(
+            "Findings for review", findings, "No findings are recorded yet.", FINDINGS_COLUMNS
+        )
         _show_records(
             "Evidence schedule",
             evidence,
             "No evidence items are recorded in the shared database yet.",
+            EVIDENCE_COLUMNS,
         )
         _show_records(
             "Chain of custody",
             custody,
             "The shared custody log is empty.",
+            CUSTODY_COLUMNS,
         )
 
 
 def timeline_page() -> None:
     st.header("Timeline")
-    st.caption("Events from recorded auth-log and CloudTrail parser artifacts, merged with persisted findings.")
+    st.caption(
+        "What happened, in time order. Entries marked Finding are suspicious activity the "
+        "system flagged; open any entry to see where it came from."
+    )
     identity = _page_identity()
     if identity is None:
         return
@@ -224,7 +287,7 @@ def timeline_page() -> None:
         return
 
     if entries:
-        st.caption(f"{len(entries)} chronological timeline entries")
+        st.caption(f"{len(entries)} entries, oldest first")
         for entry in entries:
             is_finding = entry.get("entry_type") == "finding"
             marker = "🚩 Finding" if is_finding else "• Event"
@@ -235,7 +298,7 @@ def timeline_page() -> None:
                     severity = str(entry.get("severity", "medium")).lower()
                     message = f"{severity.title()} severity finding"
                     if severity in {"critical", "high"}:
-                        st.error(message)
+                        st.error(f"{message}: review this first.")
                     else:
                         st.warning(message)
                 else:
@@ -244,16 +307,20 @@ def timeline_page() -> None:
                         f"{entry.get('event_type', 'event')} · "
                         f"{entry.get('outcome', 'unknown')}"
                     )
-                st.markdown("**Provenance**")
+                st.markdown("**Where this record came from**")
                 st.json(entry.get("provenance", {}))
-                st.markdown("**Details**")
+                st.markdown("**Technical details**")
                 st.json(entry.get("details", {}))
     else:
-        st.info("No parser artifacts or findings are recorded in the shared database yet.")
+        st.info("There is nothing on the timeline yet: no events or findings have been recorded.")
 
 
 def findings_page() -> None:
     st.header("Findings")
+    st.caption(
+        "Suspicious activity the system flagged, and how serious it is. "
+        "Critical and High findings need attention first."
+    )
     identity = _page_identity()
     if identity is None:
         return
@@ -267,14 +334,20 @@ def findings_page() -> None:
         _load_error(exc)
         return
 
-    if findings:
-        st.dataframe(findings, width="stretch")
-    else:
-        st.info("No findings are recorded in the shared database yet.")
+    _show_records(
+        "Flagged activity",
+        findings,
+        "No findings are recorded in the shared database yet.",
+        FINDINGS_COLUMNS,
+    )
 
 
 def custody_history_page() -> None:
     st.header("Custody history")
+    st.caption(
+        "Who handled the evidence, what they did and when. Opening evidence, findings or the "
+        "timeline is recorded here too."
+    )
     identity = _page_identity()
     if identity is None:
         return
@@ -288,123 +361,146 @@ def custody_history_page() -> None:
         _load_error(exc)
         return
 
-    if entries:
-        st.dataframe(entries, width="stretch")
-    else:
-        st.info("The shared custody log is empty.")
+    _show_records(
+        "Record of handling",
+        entries,
+        "The shared custody log is empty.",
+        CUSTODY_COLUMNS,
+    )
 
 
 def verification_page() -> None:
-    st.header("Verification")
+    st.header("Verification: has anything been altered?")
+    st.caption(
+        "Checks that a case record has not been changed since it was sealed, and tells you "
+        "in plain words whether you can rely on it."
+    )
     if _page_identity() is None:
         return
 
     st.info(
-        "The demo below runs the independent verifier against a disposable, synthetic case. "
-        "It does not use or modify the live case database."
+        "The demo below runs the independent verifier on a made-up practice case. "
+        "It does not use or change the live case database."
     )
     with st.container(border=True):
-        st.subheader("Demo only: isolated tamper-detection demo")
+        st.subheader("Demo only: see tampering get caught")
         st.warning(
-            "This separate demo creates a fresh case with synthetic records, tampers only "
-            "with its disposable copy, and checks the hash chain. No real evidence or "
-            "custody log is changed. Signatures and external anchors are not tested."
+            "This demo builds a practice case with made-up records, then deliberately alters "
+            "one record in a disposable copy to show the check catching it. No real evidence "
+            "or custody record is touched. Only the chain of custody entries is checked; "
+            "signatures and signed checkpoints are not."
         )
         if st.button(
-            "demo: simulate tampering",
-            key="stamped_simulate_tampering",
-            type="primary",
+                "Run tamper-detection demo",
+                key="stamped_simulate_tampering",
+                type="primary",
         ):
             repository_root = Path(__file__).resolve().parent.parent
             verifier_path = repository_root / "verifier" / "verify.py"
-            with tempfile.TemporaryDirectory(prefix="stamped-tamper-demo-") as temp_dir:
-                case_dir = Path(temp_dir) / "demo-case"
-                try:
-                    preparation = subprocess.run(
-                        [
-                            sys.executable,
-                            "-m",
-                            "scripts.simulate_tamper",
-                            "--case-dir",
-                            str(case_dir),
-                        ],
-                        cwd=repository_root,
-                        capture_output=True,
-                        text=True,
-                        timeout=30,
-                        check=False,
-                    )
-                    if preparation.returncode != 0:
-                        st.error("Could not prepare the isolated demo case.")
-                        st.code(preparation.stdout + preparation.stderr, language="text")
+            with st.spinner("Running the check..."):
+                with tempfile.TemporaryDirectory(prefix="stamped-tamper-demo-") as temp_dir:
+                    case_dir = Path(temp_dir) / "demo-case"
+                    try:
+                        preparation = subprocess.run(
+                            [
+                                sys.executable,
+                                "-m",
+                                "scripts.simulate_tamper",
+                                "--case-dir",
+                                str(case_dir),
+                            ],
+                            cwd=repository_root,
+                            capture_output=True,
+                            text=True,
+                            timeout=30,
+                            check=False,
+                        )
+                        if preparation.returncode != 0:
+                            LOGGER.warning(
+                                "Demo case preparation failed: %s",
+                                preparation.stdout + preparation.stderr,
+                                )
+                            st.error(
+                                "The practice case could not be set up on this computer, so "
+                                "no check was run. Nothing was changed.\n\n"
+                                "**What to do:** ask your administrator to check the "
+                                "Stamped installation."
+                            )
+                            return
+
+                        result = subprocess.run(
+                            [
+                                sys.executable,
+                                str(verifier_path),
+                                "--case-export",
+                                str(case_dir),
+                                "--allow-no-anchors",
+                                "--json",
+                            ],
+                            cwd=repository_root,
+                            capture_output=True,
+                            text=True,
+                            timeout=60,
+                            check=False,
+                        )
+                    except (OSError, subprocess.TimeoutExpired) as exc:
+                        LOGGER.warning("Demo command could not complete: %s", exc)
+                        st.error(
+                            "The check did not finish, so nothing has been confirmed. "
+                            "Nothing was changed.\n\n"
+                            "**What to do:** try again. If it keeps happening, ask your "
+                            "administrator."
+                        )
                         return
 
-                    result = subprocess.run(
-                        [
-                            sys.executable,
-                            str(verifier_path),
-                            "--case-export",
-                            str(case_dir),
-                            "--allow-no-anchors",
-                            "--json",
-                        ],
-                        cwd=repository_root,
-                        capture_output=True,
-                        text=True,
-                        timeout=60,
-                        check=False,
-                    )
-                except (OSError, subprocess.TimeoutExpired) as exc:
-                    st.error(f"The demo command could not complete: {exc}")
-                    return
-
-            st.markdown("### Actual verifier output")
             verifier_output = result.stdout + result.stderr
-            st.code(verifier_output, language="json")
-            try:
-                report = json.loads(result.stdout)
-            except json.JSONDecodeError as exc:
-                st.error(
-                    "The verifier did not return its expected JSON report "
-                    f"(exit code {result.returncode}): {exc}"
+            report = _read_report(result)
+            show_verdict(summarise_verification(report))
+            if report is not None:
+                caught, note = demo_expectation(report)
+                if caught:
+                    st.caption(note)
+                else:
+                    st.warning(note)
+            with st.expander("Technical details: the verifier's full report"):
+                st.caption(
+                    "Exactly what the verifier printed. Share this with a technical "
+                    "colleague if you need a second opinion."
                 )
-                return
+                st.code(verifier_output, language="json")
 
-            expected_exit_code = {"PASS": 0, "FAIL": 1, "ERROR": 2}.get(
-                report.get("overall")
-            )
-            if result.returncode != expected_exit_code:
-                st.error(
-                    "The verifier exit code does not match its reported result "
-                    f"(exit code {result.returncode}, result {report.get('overall')!r})."
-                )
-                return
 
-            chain_check = report.get("checks", {}).get("chain", {})
-            broken_entry_id = report.get("broken_entry_id")
-            if (
-                report.get("overall") == "FAIL"
-                and chain_check.get("status") == "FAIL"
-                and isinstance(broken_entry_id, int)
-            ):
-                st.error(
-                    "The verifier detected the tampering. "
-                    f"The first broken custody entry is #{broken_entry_id}."
-                )
-            elif report.get("overall") == "PASS":
-                st.warning(
-                    "The verifier reported PASS; this demo did not produce the expected "
-                    "tamper detection."
-                )
-            else:
-                st.error(
-                    "The verifier did not confirm the expected hash-chain tampering. "
-                    f"Reported result: {report.get('overall', 'unknown')}."
-                )
+def _read_report(result: subprocess.CompletedProcess) -> dict | None:
+    """The verifier's JSON report, or None if it cannot be trusted.
+
+    None is shown to the reader as UNKNOWN (never as a pass). The reason goes to the log.
+    """
+    try:
+        report = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        LOGGER.warning(
+            "Verifier did not return JSON (exit code %s): %s", result.returncode, exc
+        )
+        return None
+    if not isinstance(report, dict):
+        LOGGER.warning("Verifier JSON was not an object (exit code %s)", result.returncode)
+        return None
+    expected_exit_code = {"PASS": 0, "FAIL": 1, "ERROR": 2}.get(report.get("overall"))
+    if result.returncode != expected_exit_code:
+        LOGGER.warning(
+            "Verifier exit code %s does not match its reported result %r",
+            result.returncode,
+            report.get("overall"),
+        )
+        return None
+    return report
 
 
 def reports_page() -> None:
     st.header("Reports")
+    st.caption(
+        "Download a copy of what you are allowed to see, to keep or hand to someone else."
+    )
     identity = _page_identity()
     if identity is None:
         return
@@ -420,10 +516,10 @@ def reports_page() -> None:
         if can(role, resource, Action.EXPORT)
     }
     if not available:
-        st.info("This role does not have permission to export reports.")
+        st.info("Your role is not allowed to download reports.")
         return
 
-    report_name = st.selectbox("Report", list(available), key="stamped_report_type")
+    report_name = st.selectbox("Which report?", list(available), key="stamped_report_type")
     if st.button("Prepare report", key="stamped_prepare_report"):
         resource, exporter = available[report_name]
         try:
@@ -436,38 +532,41 @@ def reports_page() -> None:
             _load_error(exc)
             return
 
-        st.success(f"Prepared {result.row_count} rows; SHA-256: {result.sha256}")
+        st.success(
+            f"Prepared {result.row_count} rows. Fingerprint (SHA-256): {result.sha256}. "
+            "Anyone can use this fingerprint to confirm the downloaded file was not changed."
+        )
         st.download_button(
-            "Download JSON report",
+            "Download report (JSON file)",
             data=result.content,
             file_name=f"stamped-{result.dataset}.json",
             mime="application/json",
         )
-    
-    
-    # ... (Kea's existing JSON exports code) ...
 
     st.divider()
-    st.subheader("Formal Custody Report (PDF/HTML)")
-    st.caption("Generates a complete chain-of-custody document for the current database state.")
-    
-    case_id_input = st.text_input("Enter Case ID for Report:", value="CASE-")
-    
-    if st.button("Generate Full Case Report", type="primary") and case_id_input:
+    st.subheader("Formal custody report (PDF or web page)")
+    st.caption(
+        "A complete chain-of-custody document for the case as it stands now, "
+        "suitable for filing."
+    )
+
+    case_id_input = st.text_input("Case reference (for example CASE-001):", value="CASE-")
+
+    if st.button("Create the formal report", type="primary") and case_id_input:
         from report.export_report import generate_full_report
-        
-        with st.spinner("Compiling live case data..."):
+
+        with st.spinner("Putting the report together..."):
             try:
                 pseudonymizer = _load_pseudonymizer()
                 role_str = role.value if hasattr(role, 'value') else str(role)
                 html_data, pdf_data = generate_full_report(case_id_input, role_str, actor, pseudonymizer)
-                
-                st.success(f"Report generated successfully for: `{case_id_input}`")
-                
+
+                st.success(f"The report for `{case_id_input}` is ready to download.")
+
                 col1, col2 = st.columns(2)
                 with col1:
                     st.download_button(
-                        label="Download HTML Report",
+                        label="Download report (web page)",
                         data=html_data,
                         file_name=f"{case_id_input}_Custody_Report.html",
                         mime="text/html"
@@ -475,33 +574,46 @@ def reports_page() -> None:
                 with col2:
                     if pdf_data:
                         st.download_button(
-                            label="Download PDF Report",
+                            label="Download report (PDF)",
                             data=pdf_data,
                             file_name=f"{case_id_input}_Custody_Report.pdf",
                             mime="application/pdf"
                         )
                     else:
-                        st.warning("PDF export unavailable. Run `pip install xhtml2pdf`.")
-                        
-            except Exception as exc:
-                st.error(f"Failed to generate report: {exc}")
+                        st.warning(
+                            "The PDF version is not available on this computer. The web page "
+                            "version contains the same information. Ask your administrator "
+                            "to enable PDF export."
+                        )
+
+            except Exception as exc:  # noqa: BLE001 - shown to the reader in plain words
+                _load_error(exc, headline="The report could not be created.")
 
 def main() -> None:
-    st.set_page_config(page_title="Stamped", layout="wide")
+    st.set_page_config(page_title="Stamped", page_icon="\U0001F50F", layout="wide")
+    inject_theme()
     st.title("Stamped")
     st.caption("Court-ready digital evidence that stays trustworthy for 30 years.")
-    st.sidebar.header("Demo login")
+    st.sidebar.header("Sign in")
     st.sidebar.caption(
-        "Enter a user ID already registered in the shared database. "
-        "The role is resolved from that database; this demo login is not password authentication."
+        "Enter the user ID you were given. This is a demonstration sign-in: it checks your "
+        "ID but does not use a password. Your role decides what you can see."
     )
 
     identity = _login_sidebar()
+    with st.sidebar.expander("What do these terms mean?"):
+        for term, meaning in GLOSSARY:
+            st.markdown(f"**{term}**  \n{meaning}")
     if identity is None:
         st.info(
-            "Initialize the shared database with `python schemas/init_db.py` and add an active "
-            "user before signing in. No sample case data is generated by the app."
+            "Welcome. Sign in with your user ID in the panel on the left to open your case. "
+            "If you do not have a user ID, ask your administrator."
         )
+        with st.expander("First-time setup (for administrators)"):
+            st.markdown(
+                "Initialize the shared database with `python schemas/init_db.py` and add an "
+                "active user before signing in. No sample case data is generated by the app."
+            )
         return
     _, role = identity
 
