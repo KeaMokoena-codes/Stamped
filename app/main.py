@@ -6,9 +6,11 @@ import os
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 import streamlit as st
+from streamlit.errors import StreamlitSecretNotFoundError
 
 from access import (
     AccessError,
@@ -46,13 +48,51 @@ from app.plain_language import (
     signin_error,
     summarise_verification,
 )
-from app.theme import inject_theme, show_verdict
+from app.theme import demo_banner_html, inject_theme, show_verdict
 
 LOGGER = logging.getLogger("stamped.app")
 
 REPOSITORY_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_PSEUDONYM_KEY = REPOSITORY_ROOT / "keys" / "pseudonym.key"
 PSEUDONYM_KEY_ENV_VAR = "STAMPED_PSEUDONYM_KEY"
+AUTH_MODE_ENV_VAR = "STAMPED_AUTH_MODE"
+OIDC_USER_CLAIM_ENV_VAR = "STAMPED_OIDC_USER_CLAIM"
+SESSION_IDLE_SECONDS = 30 * 60
+
+
+def _auth_mode() -> str:
+    mode = os.environ.get(AUTH_MODE_ENV_VAR, "demo").strip().lower()
+    if mode not in {"demo", "oidc"}:
+        raise ValueError(f"{AUTH_MODE_ENV_VAR} must be 'demo' or 'oidc'.")
+    return mode
+
+
+def _is_production_demo() -> bool:
+    return (
+        os.environ.get("STAMPED_ENV", "").strip().lower() == "production"
+        and _auth_mode() == "demo"
+    )
+
+
+def _oidc_claim_user_id(user, claim_name: str) -> str | None:
+    """Return only the configured identity-provider claim used as the DB user ID."""
+    claim = user.get(claim_name)
+    if not isinstance(claim, str) or not claim.strip():
+        return None
+    return claim.strip()
+
+
+def _oidc_is_logged_in() -> bool:
+    return bool(st.user.get("is_logged_in", False))
+
+
+def _oidc_is_configured() -> bool:
+    try:
+        config = st.secrets.get("auth", {})
+    except StreamlitSecretNotFoundError:
+        return False
+    required = ("redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url")
+    return all(isinstance(config.get(key), str) and config.get(key).strip() for key in required)
 
 
 def _load_pseudonymizer() -> Pseudonymizer | None:
@@ -87,6 +127,15 @@ def _identity() -> tuple[str, Role] | None:
     actor = st.session_state.get("stamped_actor")
     if not actor:
         return None
+    now = time.monotonic()
+    last_activity = st.session_state.get("stamped_last_activity")
+    if last_activity is not None and now - last_activity >= SESSION_IDLE_SECONDS:
+        st.session_state.pop("stamped_actor", None)
+        st.session_state.pop("stamped_last_activity", None)
+        if _auth_mode() == "oidc" and _oidc_is_logged_in():
+            st.logout()
+        return None
+    st.session_state["stamped_last_activity"] = now
     try:
         with connect_database() as connection:
             role = resolve_role(connection, actor)
@@ -97,6 +146,52 @@ def _identity() -> tuple[str, Role] | None:
     return actor, role
 
 
+def _oidc_login_sidebar() -> tuple[str, Role] | None:
+    if not _oidc_is_configured():
+        st.sidebar.error(
+            "OIDC mode is enabled but the identity-provider settings are missing. "
+            "Ask your administrator to configure .streamlit/secrets.toml."
+        )
+        return None
+
+    if not _oidc_is_logged_in():
+        if st.sidebar.button("Sign in with identity provider", key="stamped_oidc_login"):
+            st.login()
+        st.sidebar.caption("Sign-in is provided by the configured identity provider.")
+        return None
+
+    claim_name = os.environ.get(OIDC_USER_CLAIM_ENV_VAR, "email").strip()
+    user_id = _oidc_claim_user_id(st.user, claim_name)
+    if user_id is None:
+        st.sidebar.error(
+            "Your identity provider did not supply the configured account claim. "
+            "Ask your administrator to check the OIDC mapping."
+        )
+        st.session_state.pop("stamped_actor", None)
+        return None
+
+    try:
+        with connect_database() as connection:
+            resolve_role(connection, user_id)
+    except (AccessError, DatabaseError) as exc:
+        _sidebar_problem(exc)
+        st.session_state.pop("stamped_actor", None)
+        return None
+
+    st.session_state["stamped_actor"] = user_id
+    identity = _identity()
+    if identity is None:
+        return None
+
+    actor, role = identity
+    st.sidebar.caption(f"Signed in: {_signed_in_name(actor)} ({role_label(role)})")
+    if st.sidebar.button("Sign out", key="stamped_oidc_sign_out"):
+        st.session_state.pop("stamped_actor", None)
+        st.session_state.pop("stamped_last_activity", None)
+        st.logout()
+    return identity
+
+
 def _sidebar_problem(exc: Exception) -> None:
     """Sign-in trouble in plain words. The raw exception goes to the server log, not the screen."""
     LOGGER.warning("Sign-in problem (%s): %s", type(exc).__name__, exc)
@@ -105,6 +200,9 @@ def _sidebar_problem(exc: Exception) -> None:
 
 
 def _login_sidebar() -> tuple[str, Role] | None:
+    if _auth_mode() == "oidc":
+        return _oidc_login_sidebar()
+
     with st.sidebar.form("demo_login"):
         user_id = st.text_input("Your user ID", key="stamped_login_user_id")
         submitted = st.form_submit_button("Sign in (or switch user)")
@@ -123,6 +221,7 @@ def _login_sidebar() -> tuple[str, Role] | None:
                 st.session_state.pop("stamped_actor", None)
             else:
                 st.session_state["stamped_actor"] = user_id
+                st.session_state["stamped_last_activity"] = time.monotonic()
 
     identity = _identity()
     if identity is None:
@@ -135,6 +234,7 @@ def _login_sidebar() -> tuple[str, Role] | None:
     )
     if st.sidebar.button("Sign out", key="stamped_sign_out"):
         st.session_state.pop("stamped_actor", None)
+        st.session_state.pop("stamped_last_activity", None)
         st.rerun()
     return identity
 
@@ -453,7 +553,8 @@ def verification_page() -> None:
                 with tempfile.TemporaryDirectory(prefix="stamped-tamper-demo-") as temp_dir:
                     case_dir = Path(temp_dir) / "demo-case"
                     try:
-                        preparation = subprocess.run(
+                        # Fixed module invocation; no command or options come from a user.
+                        preparation = subprocess.run(  # noqa: S603
                             [
                                 sys.executable,
                                 "-m",
@@ -480,7 +581,7 @@ def verification_page() -> None:
                             )
                             return
 
-                        result = subprocess.run(
+                        result = subprocess.run(  # noqa: S603
                             [
                                 sys.executable,
                                 str(verifier_path),
@@ -646,13 +747,30 @@ def main() -> None:
     inject_theme()
     st.title("Stamped")
     st.caption("Court-ready digital evidence that stays trustworthy for 30 years.")
+    try:
+        mode = _auth_mode()
+    except ValueError as exc:
+        st.error(str(exc))
+        st.stop()
+    if _is_production_demo():
+        st.error(
+            "Stamped cannot start in production with demo sign-in. "
+            "Set STAMPED_AUTH_MODE=oidc and configure the identity provider."
+        )
+        st.stop()
+    if mode == "demo":
+        st.markdown(demo_banner_html(), unsafe_allow_html=True)
     st.sidebar.header("Sign in")
-    st.sidebar.caption("Enter the user ID you were given.")
+    if mode == "demo":
+        st.sidebar.caption("Enter the user ID you were given.")
 
     identity = _login_sidebar()
     if identity is None:
         # Nothing about the system, its set-up or its contents is shown until someone has signed in.
-        st.info("Welcome. Sign in with your user ID in the panel on the left to open your case.")
+        if mode == "demo":
+            st.info("Welcome. Sign in with your user ID in the panel on the left to open your case.")
+        else:
+            st.info("Welcome. Sign in with the configured identity provider to open your case.")
         return
     _, role = identity
     with st.sidebar.expander("What do these terms mean?"):

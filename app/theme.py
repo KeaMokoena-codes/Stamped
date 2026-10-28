@@ -97,6 +97,20 @@ def verdict_card_html(summary: VerdictSummary) -> str:
     )
 
 
+def demo_banner_html() -> str:
+    """The fixed demo warning uses the product palette and contains no user data."""
+    background = PALETTE["deep"]
+    foreground = PALETTE["parchment"]
+    border = PALETTE["accent"]
+    return (
+        '<div class="stamped-demo-banner" role="note" '
+        f'style="background:{background};color:{foreground};border-left:6px solid {border};'
+        'padding:.75rem 1rem;margin:1rem 0;border-radius:4px;font-weight:600">'
+        "Demo mode: sign-in by user ID, synthetic data only. Not for real evidence."
+        "</div>"
+    )
+
+
 def inject_theme() -> None:
     import streamlit as st
 

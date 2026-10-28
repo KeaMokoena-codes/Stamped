@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from capture import listener
+from capture.auth import signed_headers
 from capture.listener import Settings, create_app
 from seal.custody_log import recompute_and_verify_chain
 from seal.intake import IntakeError
@@ -366,6 +367,61 @@ def test_oversize_request_body_is_413(tmp_path):
     env.assert_nothing_sealed()
 
 
+CAPTURE_SECRET = b"synthetic-capture-secret-with-more-than-32-bytes"
+
+
+def test_non_loopback_listener_requires_authentication(tmp_path):
+    with pytest.raises(ValueError, match="Non-loopback"):
+        create_app(Settings(db_path=tmp_path / "stamped.db"), host="0.0.0.0")
+
+
+def test_signed_listener_rejects_missing_and_invalid_signatures_without_logging_body(tmp_path, caplog):
+    env = Env(tmp_path, auth_secret=CAPTURE_SECRET)
+    body = json.dumps(bundle_with(inline_file(data=b"body-must-not-be-logged"))).encode()
+
+    missing = env.client.post("/alert", data=body, content_type="application/json")
+    assert missing.status_code == 401
+    headers = signed_headers(b"wrong-secret-with-at-least-32-bytes", body)
+    invalid = env.client.post(
+        "/alert", data=body, content_type="application/json", headers=headers
+    )
+    assert invalid.status_code == 401
+    assert invalid.get_json()["error"] == "unauthorized"
+    assert env.client.application.extensions["stamped_listener_rejections"]["authentication"] == 2
+    assert "body-must-not-be-logged" not in caplog.text
+    env.assert_nothing_sealed()
+
+
+def test_signed_listener_rejects_a_replayed_request(tmp_path):
+    env = Env(tmp_path, auth_secret=CAPTURE_SECRET)
+    body = json.dumps(bundle_with(inline_file())).encode()
+    headers = signed_headers(CAPTURE_SECRET, body)
+
+    first = env.client.post(
+        "/alert", data=body, content_type="application/json", headers=headers
+    )
+    assert first.status_code == 201
+    entries_after_first = env.count("custody_log")
+
+    replay = env.client.post(
+        "/alert", data=body, content_type="application/json", headers=headers
+    )
+    assert replay.status_code == 401
+    assert replay.get_json()["error"] == "replayed_request"
+    assert env.count("custody_log") == entries_after_first
+    assert env.client.application.extensions["stamped_listener_rejections"]["authentication"] == 1
+
+
+def test_listener_rate_limits_requests_per_source(tmp_path):
+    env = Env(tmp_path, max_requests_per_minute=1)
+    first = env.client.post("/alert", data="{}", content_type="text/plain")
+    second = env.client.post("/alert", data="{}", content_type="text/plain")
+    assert first.status_code == 415
+    assert second.status_code == 429
+    assert second.get_json()["error"] == "rate_limited"
+    assert env.client.application.extensions["stamped_listener_rejections"]["rate_limited"] == 1
+
+
 def test_oversize_inline_file_is_rejected(tmp_path):
     env = Env(tmp_path, max_file_bytes=10)
     assert env.post(bundle_with(inline_file(data=b"A" * 11))).status_code == 400
@@ -460,6 +516,10 @@ def test_listener_imports_no_external_service_clients():
             imported |= {a.name.split(".")[0] for a in node.names}
         elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
             imported.add(node.module.split(".")[0])
-    allowed = {"__future__", "argparse", "base64", "binascii", "hashlib", "json", "logging", "re", "sys",
-               "tempfile", "dataclasses", "datetime", "pathlib", "flask", "werkzeug", "access", "seal"}
+    allowed = {
+        "__future__", "argparse", "base64", "binascii", "hashlib", "ipaddress", "json",
+        "logging", "os", "re", "sys", "tempfile", "threading", "time", "collections",
+        "dataclasses", "datetime", "pathlib", "flask", "werkzeug", "access", "capture",
+        "seal", "gunicorn",
+    }
     assert imported <= allowed, f"unexpected imports: {sorted(imported - allowed)}"

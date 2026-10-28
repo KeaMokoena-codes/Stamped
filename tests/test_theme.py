@@ -1,7 +1,7 @@
 """Issue #31: the Stamped colours must stay readable, distinct and tied to meaning."""
 
 from app.plain_language import VerdictSummary
-from app.theme import PALETTE, SYMBOLS, css, verdict_card_html
+from app.theme import PALETTE, SYMBOLS, css, demo_banner_html, verdict_card_html
 
 
 def _luminance(hex_colour: str) -> float:
@@ -93,6 +93,14 @@ def test_css_is_single_line_and_does_not_recolour_normal_text():
     sheet = css()
     assert "\n" not in sheet
     assert "h1{border-bottom" in sheet and "color:" not in sheet.split(".stamped-verdict{")[0]
+
+
+def test_demo_banner_warns_about_user_id_sign_in_and_synthetic_data():
+    banner = demo_banner_html()
+    assert "Demo mode: sign-in by user ID, synthetic data only. Not for real evidence." in banner
+    assert PALETTE["deep"] in banner
+    assert PALETTE["parchment"] in banner
+    assert PALETTE["accent"] in banner
 
 
 def _config():

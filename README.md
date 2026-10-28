@@ -63,7 +63,7 @@ stamped/
 ```bash
 git clone <repo-url>
 cd stamped
-pip install -r requirements.txt
+python -m pip install -r requirements.txt
 ```
 
 ### Crypto library setup
@@ -98,6 +98,15 @@ python -m scripts.create_user --user-id examiner1 --display-name "Demo Examiner"
 
 The app reads the configured database (`data/stamped.db` by default; override it with `STAMPED_DB_PATH`). Sign in using a registered user ID; switch roles by signing in as a different registered user. This is a demo role switch, not password authentication. The app does not create sample users, evidence, or findings.
 
+Demo mode is the default and displays a permanent warning that user-ID sign-in is
+not for real evidence. For an optional OIDC sign-in, configure Streamlit's
+`[auth]` settings in an untracked `.streamlit/secrets.toml`, require MFA at the
+identity provider, then set `STAMPED_AUTH_MODE=oidc`. The configured
+`STAMPED_OIDC_USER_CLAIM` (default: `email`) must exactly match an active
+`users.user_id`; the role continues to come from the database. See
+[`docs/oidc-authentication.md`](docs/oidc-authentication.md). Setting
+`STAMPED_ENV=production` prevents startup in demo mode.
+
 If using the prosecutor role, create a pseudonym key once:
 
 ```bash
@@ -115,6 +124,17 @@ Then, start the app using the wrapper:
 ```bash
 python -m streamlit run run_app.py
 ```
+
+For local development, install the pre-commit hooks after installing the
+development requirements:
+
+```bash
+python -m pip install -r requirements-dev.txt
+pre-commit install
+```
+
+The secret hook uses the `gitleaks` command-line tool; install it using the
+official instructions before committing. CI scans the full Git history.
 
 The Timeline view rebuilds events from verified auth-log and CloudTrail parser artifacts linked to sealed evidence, merges them with persisted findings in chronological order, and exposes each entry's provenance and details. The view fails visibly if a sealed source or parser output no longer matches its recorded hashes.
 
