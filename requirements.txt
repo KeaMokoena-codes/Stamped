@@ -1,6 +1,6 @@
 # --- Core data handling (Abdi: ingest, Alex: detect) ---
 pandas==2.3.3; python_version < "3.11"
-pandas==3.0.6; python_version >= "3.11"
+pandas==3.1.0; python_version >= "3.11"
 
 # --- Frontend / dashboard (Kea: access & UI) ---
 streamlit==1.65.0
