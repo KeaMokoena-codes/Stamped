@@ -158,9 +158,9 @@ def run_test_suite():
                     assert compute_sha256(f.read()) == expected_hash, "File on disk altered post-seal."
 
                 # 2. INGEST
-                subprocess.run([sys.executable, "-m", "ingest.main", "--db", db_path], env=env, check=True, capture_output=True, text=True)
+                ingest_res = subprocess.run([sys.executable, "-m", "ingest.timeline", "--db", db_path], env=env, check=True)
                 
-                cur.execute("SELECT COUNT(*) as c FROM parsed_events WHERE evidence_id = ?", (ev_id,))
+                cur.execute("SELECT COUNT(*) as c FROM artifacts WHERE source_evidence_id = ?", (ev_id,))
                 parsed_count = cur.fetchone()["c"]
                 
                 # Strict line math logic check
@@ -170,8 +170,19 @@ def run_test_suite():
 
                 # 3. DETECT
                 subprocess.run([sys.executable, "-m", "detect.main", "--db", db_path], env=env, check=True)
-                cur.execute("SELECT rule_name, key_identifier, event_count, severity, raw_refs FROM findings")
-                current_findings = [dict(row) for row in cur.fetchall()]
+                cur.execute("SELECT severity, details_json FROM findings")
+                current_findings = []
+                for row in cur.fetchall():
+                    d = json.loads(row["details_json"])
+                    # Extract the line numbers from the 'line:XXX' string format
+                    refs = [int(str(e["raw_ref"]).replace("line:", "")) for e in d.get("source_events", []) if "raw_ref" in e]
+                    current_findings.append({
+                        "rule_name": d.get("rule_name"),
+                        "key_identifier": d.get("key"),
+                        "event_count": len(d.get("source_events", [])),
+                        "severity": row["severity"],
+                        "raw_refs": json.dumps(refs)
+                    })
                 
                 expected_list = EXPECTED_RESULTS[source_name]
                 if not expected_list:
@@ -192,7 +203,7 @@ def run_test_suite():
                             assert "Failed password" in lines[ref - 1], f"False provenance! Line {ref} does not contain failure."
 
                 # 4. REPORT (Check limits and disclaimers)
-                subprocess.run([sys.executable, "-m", "report.main", "--db", db_path, "--out", base_dir], env=env, check=True)
+                subprocess.run([sys.executable, "-m", "report.export_report", "--db", db_path, "--out", base_dir], env=env, check=True)
                 report_path = os.path.join(base_dir, "custody_report.html")
                 if os.path.exists(report_path):
                     with open(report_path, "r") as r:
@@ -216,7 +227,7 @@ def run_test_suite():
             assert str(tamper_id) in tamper_res.stderr or str(tamper_id) in tamper_res.stdout, "FATAL: Verifier failed to pinpoint the exact broken entry_id."
 
             print("\n[SUCCESS] Robust E2E Pipeline passed all logic, integrity, and tamper-detection checks.")
-            # conn.close()
+            conn.close()
 
         finally:
             print(">>> Tearing down listener process...")
