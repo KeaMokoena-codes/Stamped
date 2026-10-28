@@ -77,6 +77,25 @@ Why each role gets what it gets (change the tables in `access/roles.py` if your 
   address are withheld. Distances, speeds, counts, times, hashes and rule wording stay, so the case can still
   be argued and checked.
 
+## Which pages each role is offered
+
+The menu offers a role only the pages it needs, and each page also checks this itself, so a page opened by its
+address behaves the same way. The rules are `PAGE_ACCESS` in `access/roles.py` (default deny: a page that is
+not listed cannot be opened). This decides what is shown; the data functions still enforce the permissions
+above on every read.
+
+| Page | Needs | Examiner | Investigating officer | Prosecutor |
+|---|---|---|---|---|
+| Case overview | view evidence and findings | yes | yes | yes |
+| Timeline | view timeline | yes | yes | yes |
+| Findings | view findings | yes | yes | yes |
+| Custody history | view custody log | yes | yes | yes |
+| Verification (tamper-detection demo) | edit evidence | yes | no | no |
+| Reports | export at least one dataset | yes | yes | yes |
+
+Before anyone has signed in, the screen shows only the sign-in box. It does not mention the database, how to
+set the system up, whether an ID exists or is disabled, or any case data.
+
 ## Which personal identifiers are masked, for which roles
 
 | Identifier | Examiner | Investigating officer | Prosecutor |
@@ -90,6 +109,21 @@ Why each role gets what it gets (change the tables in `access/roles.py` if your 
 
 Collector and actor names (the staff who handled evidence) are shown to all roles: the chain of custody is
 meaningless without them.
+
+### Names for the screen (`get_directory`)
+
+The dashboard and the custody report show a user's `display_name`, an evidence item's `original_name` and
+capture time, and a finding's title instead of bare identifiers. `get_directory()` supplies those names. It is
+**display only**: the names are never written into a custody entry, never hashed, and never added to an
+`export_*` result or the verifier package, which keep using the stored identifiers. The identifier is still
+shown beside the name in the report and under "Technical details" in the dashboard, and an identifier with no
+matching record (a missing user, a deleted evidence item, a process such as `ingest`) is simply shown as it is.
+
+A name never reveals more than the same role can already read elsewhere: evidence names and finding titles are
+built from the same projected rows as `get_evidence` / `get_findings` (a prosecutor gets no `original_name`,
+so sees "Evidence item" and a short id, and finding titles arrive with identifiers already masked). A user's
+`display_name` follows the same rule as the custody-log `actor` (shown to every role); to hide it from a role,
+change that one line (`USER_FIELDS` in `access/roles.py`).
 
 ### Full field-by-field policy
 
@@ -346,6 +380,14 @@ is listed here and in `access/roles.py`). This section is checked against the co
 | `details.last_entry_id` | shown | shown | shown |
 | `details.attempted_role` | shown | **hidden** | **hidden** |
 
+#### Users (`get_directory`)
+
+| Field | Examiner | Investigating officer | Prosecutor |
+|---|---|---|---|
+| `user_id` | shown | shown | shown |
+| `display_name` | shown | shown | shown |
+| `role` | shown | shown | shown |
+
 ## Pseudonyms
 
 A pseudonym is `HMAC-SHA256(secret key, kind + value)` shortened to 10 hex characters. The same account (or
@@ -374,7 +416,7 @@ Every call writes a custody entry **before** any data is returned, using the exi
 
 | Action | Written when | Details recorded |
 |---|---|---|
-| `viewed_evidence`, `viewed_findings`, `viewed_timeline`, `viewed_custody_log` | a view | dataset, record count, record ids (hashes), filters, whether identifiers were raw or pseudonymized |
+| `viewed_evidence`, `viewed_findings`, `viewed_timeline`, `viewed_custody_log`, `viewed_directory` | a view (`viewed_directory` is the look-up of names for the screen; it records counts, never the names) | dataset, record count, record ids (hashes), filters, whether identifiers were raw or pseudonymized |
 | `exported_findings`, `exported_timeline`, `exported_custody_log` | an export | the above plus `export_sha256` and `export_bytes` of exactly what was handed over |
 | `access_denied` | a refusal (wrong role, unknown role, unknown or inactive user) | resource, action, reason; an unrecognised role is truncated to 64 characters |
 

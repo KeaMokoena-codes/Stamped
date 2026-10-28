@@ -116,7 +116,7 @@ def test_app_switches_to_the_role_registered_for_the_new_user(tmp_path, monkeypa
     app.run(timeout=15)
 
     assert not app.exception
-    assert any("officer-1 (Investigating officer)" in caption.value for caption in app.caption)
+    assert any("Officer One (Investigating officer)" in caption.value for caption in app.caption)
     assert any(element.value == "Investigation workspace" for element in app.subheader)
     assert any(element.label == "Filter leads by severity" for element in app.selectbox)
 
@@ -125,7 +125,7 @@ def test_app_switches_to_the_role_registered_for_the_new_user(tmp_path, monkeypa
     app.run(timeout=15)
 
     assert not app.exception
-    assert any("prosecutor-1 (Prosecutor)" in caption.value for caption in app.caption)
+    assert any("Prosecutor One (Prosecutor)" in caption.value for caption in app.caption)
     assert any(
         element.value == "Prosecution case brief" for element in app.subheader
     ), [element.value for element in app.subheader]
@@ -282,3 +282,76 @@ def test_direct_reports_route_exports_role_projected_rows(tmp_path, monkeypatch)
     assert len(exported_reports) == 1
     assert account not in exported_reports[0]
     assert ip_address not in exported_reports[0]
+
+
+def test_custody_history_shows_display_names_and_keeps_the_stored_ids_in_the_details(tmp_path, monkeypatch):
+    database_path = tmp_path / "stamped.db"
+    _create_app_db(database_path)
+    original_name = "alice-private-device.log"
+    with sqlite3.connect(database_path) as connection:
+        connection.execute(
+            "INSERT INTO evidence (evidence_id, content_hash, sealed_path, source, collector, "
+            "original_name, captured_at, sealed_at, metadata_json) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            ("evidence-1", "content-hash", "/srv/sealed/x.log", "manual-upload", "examiner-1",
+             original_name, "2026-10-20T08:00:00+00:00", "2026-10-20T08:01:00+00:00", None),
+        )
+        append_entry(connection, "examiner-1", "examiner", "sealed", evidence_id="evidence-1",
+                     details={"content_hash": "content-hash"})
+        connection.commit()
+    key_path = tmp_path / "pseudonym.key"
+    key_path.write_bytes(b"test-pseudonym-key-for-dashboard")
+    monkeypatch.setenv("STAMPED_DB_PATH", str(database_path))
+    monkeypatch.setenv("STAMPED_PSEUDONYM_KEY", str(key_path))
+
+    officer = AppTest.from_function(_run_custody_history_page)
+    officer.session_state["stamped_actor"] = "officer-1"
+    officer.run(timeout=15)
+    assert not officer.exception
+    shown = "\n".join(str(element.value) for element in officer.dataframe)
+    assert "Examiner One" in shown                  # the display name, in the plain table
+    assert "examiner-1" in shown                    # the stored id, in the technical details
+    assert original_name in shown                   # the officer may see the original file name
+
+    prosecutor = AppTest.from_function(_run_custody_history_page)
+    prosecutor.session_state["stamped_actor"] = "prosecutor-1"
+    prosecutor.run(timeout=15)
+    assert not prosecutor.exception
+    shown = "\n".join(str(element.value) for element in prosecutor.dataframe)
+    assert "Examiner One" in shown                  # actor names are shown to every role
+    assert original_name not in shown               # a friendly name never reveals a hidden field
+
+
+def test_signed_out_screen_shows_only_the_sign_in_box(tmp_path, monkeypatch):
+    # Even with no database at all, nothing about set-up or the system may appear before sign-in.
+    monkeypatch.setenv("STAMPED_DB_PATH", str(tmp_path / "missing.db"))
+    app = AppTest.from_file(str(APP_PATH)).run(timeout=15)
+
+    assert not app.exception
+    visible = "\n".join(
+        str(element.value)
+        for element in (*app.markdown, *app.info, *app.caption, *app.error, *app.warning)
+    ) + "\n".join(expander.label for expander in app.expander)
+    for hidden in ("First-time setup", "init_db.py", "administrator", "password", "database", "What do these terms"):
+        assert hidden.lower() not in visible.lower(), hidden
+    assert any("Sign in with your user ID" in info.value for info in app.info)
+
+
+def test_a_role_that_does_not_use_the_verification_page_cannot_open_it_directly(tmp_path, monkeypatch):
+    from tests.test_app_demo import _run_verification_page
+
+    database_path = tmp_path / "stamped.db"
+    _create_app_db(database_path)
+    monkeypatch.setenv("STAMPED_DB_PATH", str(database_path))
+
+    for actor in ("officer-1", "prosecutor-1"):
+        app = AppTest.from_function(_run_verification_page)
+        app.session_state["stamped_actor"] = actor
+        app.run(timeout=15)
+        assert not app.exception
+        assert any("Your role does not use this page" in info.value for info in app.info)
+        assert not any(button.label == "Run tamper-detection demo" for button in app.button)
+
+    app = AppTest.from_function(_run_verification_page)
+    app.session_state["stamped_actor"] = "examiner-1"
+    app.run(timeout=15)
+    assert any(button.label == "Run tamper-detection demo" for button in app.button)

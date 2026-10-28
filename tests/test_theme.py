@@ -21,8 +21,8 @@ def test_text_colours_meet_wcag_aa():
         (PALETTE["text"], PALETTE["parchment"]),
         (PALETTE["text"], PALETTE["parchment_dark"]),
         (PALETTE["ink"], PALETTE["parchment"]),
-        ("#FFFFFF", PALETTE["ink"]),  # button text on the ink-navy primary colour
-        (PALETTE["brass"], PALETTE["parchment"]),
+        (PALETTE["deep"], PALETTE["parchment"]),
+        ("#FFFFFF", PALETTE["ink"]),  # button text on the ink-teal primary colour
     ]
     for level in ("pass", "fail", "error"):
         text, background, _border = PALETTE[level]
@@ -31,9 +31,27 @@ def test_text_colours_meet_wcag_aa():
         assert _contrast(foreground, background) >= 4.5, (foreground, background)
 
 
+def test_dark_mode_colours_meet_wcag_aa():
+    pairs = [
+        (PALETTE["dark_text"], PALETTE["dark_background"]),  # body text on the page
+        (PALETTE["dark_text"], PALETTE["dark_panel"]),       # text in the sidebar and panels
+        ("#FFFFFF", PALETTE["dark_primary"]),                # Streamlit prints white on the primary colour
+    ]
+    for foreground, background in pairs:
+        assert _contrast(foreground, background) >= 4.5, (foreground, background)
+    # buttons and the title rule must also stand out from the dark page (non-text contrast is 3:1)
+    assert _contrast(PALETTE["dark_primary"], PALETTE["dark_background"]) >= 3.0
+    assert _contrast(PALETTE["accent"], PALETTE["dark_background"]) >= 3.0
+
+
 def test_verdict_borders_are_visible_against_the_page():
     for level in ("pass", "fail", "error"):
         assert _contrast(PALETTE[level][2], PALETTE["parchment"]) >= 3.0, level
+
+
+def test_the_requested_teal_palette_is_in_use():
+    assert (PALETTE["deep"], PALETTE["ink"], PALETTE["accent"]) == ("#092327", "#0B5351", "#00A9A5")
+    assert PALETTE["accent"] in css()  # the accent is the title rule, and is not used for text
 
 
 def test_the_three_verdicts_use_three_different_colours():
@@ -43,7 +61,7 @@ def test_the_three_verdicts_use_three_different_colours():
 
 def test_brand_colours_are_not_verdict_colours():
     verdict_colours = {c.lower() for level in ("pass", "fail", "error") for c in PALETTE[level]}
-    for brand in ("ink", "parchment", "parchment_dark", "brass"):
+    for brand in ("deep", "ink", "accent", "parchment", "parchment_dark", "dark_primary"):
         assert PALETTE[brand].lower() not in verdict_colours
 
 
@@ -77,16 +95,43 @@ def test_css_is_single_line_and_does_not_recolour_normal_text():
     assert "h1{border-bottom" in sheet and "color:" not in sheet.split(".stamped-verdict{")[0]
 
 
-def test_streamlit_theme_matches_the_palette():
+def _config():
     try:
         import tomllib
     except ImportError:  # Python 3.10
-        return
+        return None
     from pathlib import Path
 
-    config = tomllib.loads((Path(__file__).resolve().parent.parent / ".streamlit" / "config.toml").read_text("utf-8"))
-    theme = config["theme"]
+    return tomllib.loads((Path(__file__).resolve().parent.parent / ".streamlit" / "config.toml").read_text("utf-8"))
+
+
+def test_streamlit_light_theme_matches_the_palette():
+    config = _config()
+    if config is None:
+        return
+    theme = config["theme"]["light"]
     assert theme["primaryColor"].lower() == PALETTE["ink"].lower()
     assert theme["backgroundColor"].lower() == PALETTE["parchment"].lower()
     assert theme["secondaryBackgroundColor"].lower() == PALETTE["parchment_dark"].lower()
     assert theme["textColor"].lower() == PALETTE["text"].lower()
+
+
+def test_streamlit_dark_theme_matches_the_palette():
+    config = _config()
+    if config is None:
+        return
+    theme = config["theme"]["dark"]
+    assert theme["primaryColor"].lower() == PALETTE["dark_primary"].lower()
+    assert theme["backgroundColor"].lower() == PALETTE["dark_background"].lower()
+    assert theme["secondaryBackgroundColor"].lower() == PALETTE["dark_panel"].lower()
+    assert theme["textColor"].lower() == PALETTE["dark_text"].lower()
+
+
+def test_the_menu_is_cut_down_to_the_light_dark_switch():
+    config = _config()
+    if config is None:
+        return
+    # "minimal" removes "Record screen", Print and the developer options; the light/dark switch stays
+    # because both theme variants are defined above.
+    assert config["client"]["toolbarMode"] == "minimal"
+    assert "light" in config["theme"] and "dark" in config["theme"]

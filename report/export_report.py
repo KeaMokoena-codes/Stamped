@@ -24,7 +24,8 @@ if str(REPO_ROOT) not in sys.path:  # lets `python report/export_report.py` work
 from jinja2 import Environment, FileSystemLoader, select_autoescape  # noqa: E402
 
 from access import (AccessError, DatabaseError, connect_database, get_custody_log,  # noqa: E402
-                    get_evidence, get_findings)
+                    get_directory, get_evidence, get_findings)
+from app.plain_language import EMPTY_DIRECTORY, Directory  # noqa: E402
 from seal.custody_log import recompute_and_verify_chain  # noqa: E402
 
 try:
@@ -59,6 +60,16 @@ def generate_full_report(case_id: str, role: str, actor: str, pseudonymizer=None
         # checking first makes the entries verified exactly the entries listed in section 3.
         verification_status = _internal_chain_check(conn)
 
+        # Names are for reading only (a user's display name, an evidence file name, a finding title). They come
+        # from the same role-restricted views as the data below and are never stored, hashed or exported as
+        # data; if they cannot be looked up the report simply shows the stored identifiers.
+        try:
+            directory = Directory.from_rows(get_directory(conn, role, actor, pseudonymizer=pseudonymizer))
+        except AccessError:
+            raise
+        except Exception:  # noqa: BLE001 - a missing name must never stop the report; ids are shown instead
+            directory = EMPTY_DIRECTORY
+
         custody_logs = get_custody_log(conn, role, actor, pseudonymizer=pseudonymizer)
         evidence = get_evidence(conn, role, actor, pseudonymizer=pseudonymizer)
         findings = get_findings(conn, role, actor, pseudonymizer=pseudonymizer)
@@ -84,6 +95,7 @@ def generate_full_report(case_id: str, role: str, actor: str, pseudonymizer=None
         export_date=export_date,
         actor=actor,
         role=role,
+        directory=directory,
         evidence=evidence,
         findings=findings,
         custody_logs=custody_logs,

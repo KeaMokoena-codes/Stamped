@@ -1,15 +1,24 @@
 """Stamped colours and the verdict card (Issue #31).
 
-The palette is taken from what the product is, a digital notary for evidence:
-  INK        navy   notary / court ink      -> headings, buttons (see .streamlit/config.toml)
-  PARCHMENT  cream  the paper evidence is on -> page background (see .streamlit/config.toml)
-  BRASS      brass  the seal / stamp         -> accent rule under the title, card trim
+The palette is a three-step teal family on parchment paper, with a matching dark mode:
+  DEEP       #092327  darkest teal -> light mode: body text. Dark mode: the page background
+  INK        #0B5351  mid teal     -> light mode: buttons and links. Dark mode: sidebar and panels
+  ACCENT     #00A9A5  bright teal  -> the decorative rule under the title; never used for text
+  PARCHMENT  cream                 -> light mode: the paper evidence is on. Dark mode: body text
+  DARK_PRIMARY #05827F            -> dark-mode buttons: a shade between INK and ACCENT, light enough to
+                                     stand out on the dark page yet dark enough for white button text
+(the Streamlit settings are in .streamlit/config.toml)
+
+The verdict card keeps its own light background and dark text in both modes, so a PASS / FAIL / ERROR
+reads exactly the same whichever mode someone is using.
 
 Red, green and amber are reserved for FAIL, PASS and ERROR and for nothing else, so a brand
-colour can never be read as a verdict. Colour is never the only signal: every verdict also
-carries a symbol and the word the verifier used (PASS / FAIL / ERROR).
+colour can never be read as a verdict. Teal sits between blue and green, so colour is never the
+only signal: every verdict also carries a symbol, the word the verifier used (PASS / FAIL / ERROR)
+and a heavy left border.
 
-Every text/background pair below was checked against WCAG AA (4.5:1 for text).
+Every text/background pair below was checked against WCAG AA (4.5:1 for text). The accent is a
+decorative rule only (too light for text on parchment), so it is not held to a text ratio.
 """
 
 from __future__ import annotations
@@ -19,11 +28,17 @@ from html import escape
 from app.plain_language import VerdictSummary
 
 PALETTE = {
-    "ink": "#1B2A41",
+    "deep": "#092327",
+    "ink": "#0B5351",
+    "accent": "#00A9A5",
     "parchment": "#F7F3E8",
     "parchment_dark": "#EBE4D2",
-    "text": "#1F2933",
-    "brass": "#8A6420",
+    "text": "#092327",
+    # dark mode
+    "dark_background": "#092327",
+    "dark_panel": "#0B5351",
+    "dark_text": "#F7F3E8",
+    "dark_primary": "#05827F",
     # verdicts: (text, background, border)
     "pass": ("#14532D", "#E3F1E8", "#1E6B45"),
     "fail": ("#7A1B1B", "#FBE6E4", "#A4262C"),
@@ -47,10 +62,10 @@ def _verdict_css() -> str:
 def css() -> str:
     """The only custom CSS. Deliberately small: no colour overrides outside the verdict card,
     so Streamlit's own light/dark theme keeps working for everything else."""
-    brass = PALETTE["brass"]
+    accent = PALETTE["accent"]
     return (
         "<style>"
-        f"h1{{border-bottom:3px solid {brass};padding-bottom:.25rem;}}"
+        f"h1{{border-bottom:3px solid {accent};padding-bottom:.25rem;}}"
         ".stamped-verdict{border:2px solid;border-left-width:10px;border-radius:6px;"
         "padding:1rem 1.25rem;margin:1rem 0;}"
         ".stamped-verdict__label{font-weight:700;letter-spacing:.06em;font-size:1.05rem;}"

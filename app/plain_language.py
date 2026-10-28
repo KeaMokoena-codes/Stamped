@@ -14,6 +14,7 @@ Rules this module is held to (and tests/test_plain_language.py checks):
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from access import AccessError, DatabaseError, PseudonymizerRequired
 from access.data import AccessLogError, TimelineSourceError
@@ -101,6 +102,7 @@ ACTION_LABELS = {
     "viewed_findings": "Findings opened",
     "viewed_timeline": "Timeline opened",
     "viewed_custody_log": "Custody history opened",
+    "viewed_directory": "Names and labels looked up",
 }
 
 # (field name in the stored record, plain heading). The default view shows only these;
@@ -123,6 +125,7 @@ CUSTODY_COLUMNS = (
     ("actor", "Who"),
     ("role", "Role"),
     ("action", "What happened"),
+    ("evidence_id", "Evidence"),
 )
 
 
@@ -135,26 +138,152 @@ def action_label(value) -> str:
     return ACTION_LABELS.get(str(value), humanize(value))
 
 
-def _plain_value(key: str, value):
+# ------------------------------------------------------------ names for the screen
+#
+# DISPLAY ONLY. A name here is never written into a custody entry, never hashed and never placed in an
+# export; the stored id stays the record's identity everywhere except what a person reads on screen.
+# Every lookup falls back to the raw id, so a missing or deleted record can never cause an error.
+# The rows come from access.get_directory, which applies the same role restrictions as the evidence
+# and findings views, so a name that a role may not see simply is not in the directory.
+
+SHORT_ID_LENGTH = 8
+
+
+def short_id(value) -> str:
+    return str(value)[:SHORT_ID_LENGTH]
+
+
+def friendly_time(value) -> str:
+    """'2026-10-20T08:01:00+00:00' -> '2026-10-20 08:01 UTC'. Anything unreadable is returned as stored."""
+    text = str(value).strip()
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return text
+    if moment.tzinfo is None:
+        return text
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+@dataclass(frozen=True)
+class Directory:
+    users: dict = field(default_factory=dict)      # user_id -> (display_name, role)
+    evidence: dict = field(default_factory=dict)   # evidence_id -> {"original_name", "captured_at", "sealed_at"}
+    findings: dict = field(default_factory=dict)   # finding_id -> (severity, title)
+
+    @classmethod
+    def from_rows(cls, rows) -> "Directory":
+        users, evidence, findings = {}, {}, {}
+        for row in rows or ():
+            if not isinstance(row, dict):
+                continue
+            kind = row.get("kind")
+            if kind == "user" and row.get("user_id"):
+                users[str(row["user_id"])] = (row.get("display_name"), row.get("role"))
+            elif kind == "evidence" and row.get("evidence_id"):
+                evidence[str(row["evidence_id"])] = {k: row.get(k) for k in ("original_name", "captured_at", "sealed_at")}
+            elif kind == "finding" and row.get("finding_id"):
+                findings[str(row["finding_id"])] = (row.get("severity"), row.get("title"))
+        return cls(users, evidence, findings)
+
+    def user_name(self, user_id) -> str:
+        """The display name, or the id itself when there is no usable name."""
+        if user_id is None:
+            return ""
+        name = self.users.get(str(user_id), (None, None))[0]
+        return name.strip() if isinstance(name, str) and name.strip() else str(user_id)
+
+    def user_label(self, user_id, role=None) -> str:
+        """'Name (Role)'. `role` is the role recorded with an action; otherwise the user's current role."""
+        if user_id is None:
+            return ""
+        role = role if role not in (None, "") else self.users.get(str(user_id), (None, None))[1]
+        name = self.user_name(user_id)
+        return f"{name} ({role_label(role)})" if role not in (None, "") else name
+
+    def evidence_label(self, evidence_id) -> str:
+        """'file name (captured time)'. A role that is not given the file name gets 'Evidence item <short id>'
+        instead (the short id is a prefix of the real one, so the record can still be found)."""
+        if evidence_id is None or evidence_id == "":
+            return ""
+        info = self.evidence.get(str(evidence_id))
+        if info is None:
+            return str(evidence_id)
+        name = info.get("original_name")
+        name = name.strip() if isinstance(name, str) else ""
+        title = name or f"Evidence item {short_id(evidence_id)}"
+        when = info.get("captured_at")
+        if when:
+            return f"{title} (captured {friendly_time(when)})"
+        if info.get("sealed_at"):
+            return f"{title} (sealed {friendly_time(info['sealed_at'])})"
+        return title
+
+    def finding_label(self, finding_id) -> str:
+        """'High: finding title'. Falls back to the id when the finding is not known."""
+        if finding_id is None or finding_id == "":
+            return ""
+        entry = self.findings.get(str(finding_id))
+        if entry is None:
+            return str(finding_id)
+        severity, title = entry
+        title = title.strip() if isinstance(title, str) else ""
+        if not title:
+            return str(finding_id)
+        return f"{severity_label(severity)}: {title}" if severity else title
+
+    def related_label(self, item_id) -> str:
+        """A custody entry's artifact id: a finding's title when it is a finding, otherwise the id."""
+        return self.finding_label(item_id)
+
+
+EMPTY_DIRECTORY = Directory()
+
+
+def provenance_lines(provenance, directory: Directory) -> list[str]:
+    """Plain sentences for a timeline entry's provenance. The raw record is still shown beside them."""
+    if not isinstance(provenance, dict):
+        return []
+    lines = []
+    if provenance.get("evidence_id"):
+        lines.append(f"Evidence: {directory.evidence_label(provenance['evidence_id'])}")
+    if provenance.get("finding_id"):
+        lines.append(f"Finding: {directory.finding_label(provenance['finding_id'])}")
+    return lines
+
+
+def _plain_value(key: str, value, row=None, directory: Directory | None = None):
     if key == "severity":
         return severity_label(value)
     if key == "action":
         return action_label(value)
     if key == "role" and value is not None:
         return role_label(value)
+    if directory is not None:
+        if key in ("actor", "collector") and value:
+            return directory.user_name(value)
+        if key == "evidence_id" and value:
+            return directory.evidence_label(value)
     return value
 
 
-def plain_rows(rows: list[dict], columns: tuple[tuple[str, str], ...]) -> list[dict] | None:
+def plain_rows(rows: list[dict], columns: tuple[tuple[str, str], ...],
+               directory: Directory | None = None) -> list[dict] | None:
     """Rows reduced to the plain columns, with plain headings and wording.
 
     Returns None when none of the plain columns are present, so the caller can fall back to
     showing the full record rather than an empty table. Never adds data that was not in `rows`.
+
+    With a `directory`, ids are replaced by names for display (user, evidence). An evidence row from a
+    role that is not given the file name says so, with a short id, instead of leaving a blank column.
     """
-    shaped = [
-        {label: _plain_value(key, row[key]) for key, label in columns if key in row}
-        for row in rows
-    ]
+    shaped = []
+    for row in rows:
+        shown = {label: _plain_value(key, row[key], row, directory) for key, label in columns if key in row}
+        if (directory is not None and "original_name" in dict(columns)
+                and "original_name" not in row and row.get("evidence_id")):
+            shown = {"File name": f"Not shown for your role (item {short_id(row['evidence_id'])})", **shown}
+        shaped.append(shown)
     return shaped if any(shaped) else None
 
 
@@ -243,8 +372,14 @@ def friendly_error(exc: BaseException) -> FriendlyError:
 
 
 def signin_error(exc: BaseException) -> FriendlyError:
+    """Shown BEFORE anyone is signed in, so it says nothing about how the system is set up: no database
+    or file wording, and no hint whether an ID exists, is disabled or has an unrecognised role."""
     if isinstance(exc, DatabaseError):
-        return friendly_error(exc)
+        return FriendlyError(
+            "Sign-in is not available right now.",
+            "Please try again in a few minutes. If it keeps happening, contact your administrator.",
+            type(exc).__name__,
+        )
     return FriendlyError(
         "We could not sign you in with that user ID.",
         "Check the ID for typing mistakes. If it is correct, ask your administrator to "
