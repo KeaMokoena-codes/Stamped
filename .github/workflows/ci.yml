@@ -54,8 +54,51 @@ jobs:
       - name: Run demo end-to-end contract
         run: python -m scripts.run_e2e
 
+      # ACCEPTED RISK (docs/threat-model.md, "Compromised dependency"): xhtml2pdf==0.2.28 caps
+      # Pillow below 13, and these 38 Pillow advisories are only fixed in 13.0.0. They are ignored
+      # BY ID, so any new advisory (in Pillow or anything else) still fails this step.
+      # Remove this list when xhtml2pdf allows Pillow 13 or the PDF dependency is replaced.
       - name: Run dependency audit
-        run: python -m pip_audit -r requirements.txt
+        run: |
+          python -m pip_audit -r requirements.txt \
+            --ignore-vuln PYSEC-2026-4327 \
+            --ignore-vuln PYSEC-2026-4328 \
+            --ignore-vuln PYSEC-2026-4326 \
+            --ignore-vuln GHSA-p4wg-p73j-c528 \
+            --ignore-vuln GHSA-65qm-jvmh-6pqg \
+            --ignore-vuln GHSA-58r4-6rv3-gfh8 \
+            --ignore-vuln GHSA-pchr-8j38-3x4p \
+            --ignore-vuln GHSA-q45j-58j2-45rg \
+            --ignore-vuln GHSA-462x-pgg6-55fp \
+            --ignore-vuln GHSA-c6hw-5grf-ff96 \
+            --ignore-vuln GHSA-vx6w-vv9f-6gvg \
+            --ignore-vuln GHSA-7mwm-ghpf-9vrm \
+            --ignore-vuln GHSA-w889-685w-c8fh \
+            --ignore-vuln GHSA-j4m9-6w36-pw47 \
+            --ignore-vuln GHSA-fc9g-5qg7-mf45 \
+            --ignore-vuln GHSA-cp9v-662q-vvx9 \
+            --ignore-vuln GHSA-22hg-r758-rrw9 \
+            --ignore-vuln GHSA-74r2-7ff9-mjj2 \
+            --ignore-vuln GHSA-xgh8-jp6q-p5x8 \
+            --ignore-vuln GHSA-254f-3936-288h \
+            --ignore-vuln GHSA-jg86-v3jv-hrpm \
+            --ignore-vuln GHSA-f2g6-542v-9j58 \
+            --ignore-vuln GHSA-5xm2-6676-qcp9 \
+            --ignore-vuln GHSA-gg2r-wvfm-q9rx \
+            --ignore-vuln GHSA-332p-7hrc-92wf \
+            --ignore-vuln GHSA-24rc-8hj2-v98c \
+            --ignore-vuln GHSA-4rm8-3hmm-39fg \
+            --ignore-vuln GHSA-mrfp-p49p-3hf2 \
+            --ignore-vuln GHSA-3j72-p6qg-6xp7 \
+            --ignore-vuln GHSA-v9pv-5gc8-w2m6 \
+            --ignore-vuln GHSA-g4qv-2jxx-769h \
+            --ignore-vuln GHSA-g842-9rc4-69pw \
+            --ignore-vuln GHSA-9v9v-9qvf-h2hj \
+            --ignore-vuln GHSA-g7cr-3p24-7wf7 \
+            --ignore-vuln GHSA-p8hx-v2p6-rp84 \
+            --ignore-vuln GHSA-78g4-xqwv-q3g8 \
+            --ignore-vuln GHSA-654x-cwwv-5j9c \
+            --ignore-vuln GHSA-5x8w-8jj5-q52h
 
       - name: Run Bandit
         run: bandit -r app access capture detect ingest report seal verifier -lll
