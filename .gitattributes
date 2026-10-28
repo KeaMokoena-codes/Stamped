@@ -1,0 +1,4 @@
+# The synthetic demo fixtures are pinned byte-for-byte by tests/test_demo_contract.py.
+# Never let Git rewrite their line endings (Windows autocrlf made the hashes differ
+# between a developer's checkout and the Linux CI runner).
+data/sample/** -text
