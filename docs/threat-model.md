@@ -34,7 +34,7 @@ admissibility.
 | Stolen file-based signing key | Accepted demo limitation: file permissions do not protect a key from the account that can read it. Production key custody, backup and rotation require a KMS/HSM design and operational review. |
 | Oversized listener bundle | `tests/test_listener.py` size-limit tests. |
 | Tampered export package | `tests/test_verify.py` tampering and malformed-input cases. |
-| Compromised dependency | Dependency audit is a CI check; it cannot establish that a dependency is trustworthy or that a native build was not compromised. The current `xhtml2pdf==0.2.28` dependency caps Pillow below 13; the resolved Pillow 12.3.0 has reported advisories, so the audit remains a visible blocker until an upstream-compatible fix or PDF dependency decision is available. |
+| Compromised dependency | Dependency audit is a CI check; it cannot establish that a dependency is trustworthy or that a native build was not compromised. The current `xhtml2pdf==0.2.28` dependency caps Pillow below 13; the resolved Pillow 12.3.0 has reported advisories, **Accepted risk, decided by the team:** the 38 Pillow advisories fixed only in 13.0.0 are ignored by ID in the CI audit (`.github/workflows/ci.yml`); any other or newer advisory still fails the build. Rationale: no Stamped code imports Pillow or opens images, the dashboard has no image upload or display, and the report is text-only. Pillow is reached only through `xhtml2pdf`/`reportlab` (optional PDF export) and Streamlit internals. Residual risk: a Pillow flaw is still present in the environment and could be reached if image handling is later added. Re-open when `xhtml2pdf` allows Pillow 13 or the PDF dependency is replaced. |
 
 ## Review record
 
