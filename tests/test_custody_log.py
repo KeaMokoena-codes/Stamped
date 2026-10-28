@@ -284,7 +284,9 @@ def test_no_update_or_delete_function_exists_anywhere_in_the_codebase():
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name in forbidden_names:
                 offenders.append(f"{rel}: defines {node.name}()")
-        if forbidden_sql.search(source) and rel.as_posix() != "scripts/ci_guardrails.py":
+        # ci_guardrails.py quotes the forbidden SQL to look for it; run_e2e.py runs it on purpose, against
+        # throwaway copies of the database, to prove the append-only trigger and the hash chain catch tampering.
+        if forbidden_sql.search(source) and rel.as_posix() not in {"scripts/ci_guardrails.py", "scripts/run_e2e.py"}:
             offenders.append(f"{rel}: contains SQL that mutates custody_log")
     assert offenders == []
 
